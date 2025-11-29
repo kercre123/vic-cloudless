@@ -4,7 +4,7 @@ Vector processing text all by himself.
 
 # Get deps
 
-**Install gcc, g++, cmake, make, automake, git, pv, and wget.**
+**Install gcc, g++, cmake, make, automake, git, and wget.**
 
 # Build
 

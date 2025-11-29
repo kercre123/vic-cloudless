@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/digital-dream-labs/vector-cloud/internal/clad/cloud"
 	"github.com/digital-dream-labs/vector-cloud/internal/ipc"
@@ -49,7 +50,9 @@ func (c *client) handleConn(ctx context.Context) {
 
 		resp, err := c.handleRequest(ctx, &msg)
 		if err != nil {
-			log.Println("Error handling log collector request:", err)
+			if !strings.Contains(err.Error(), "bot not associated with account") {
+				log.Println("Error handling log collector request:", err)
+			}
 		}
 		if resp != nil {
 			var buf bytes.Buffer
