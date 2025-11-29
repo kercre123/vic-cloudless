@@ -87,6 +87,7 @@ func randomString() string {
 }
 
 func main() {
+	go mainGateway()
 	f, err := os.ReadFile("/run/vic-cloud/perRuntimeToken")
 	if err != nil {
 		token.PerRuntimeToken = randomString()

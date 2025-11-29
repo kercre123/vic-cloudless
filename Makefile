@@ -10,7 +10,7 @@ MODEL_UNZIPPED = build/en-US/model/.unzipped
 INTENT_JSON = build/en-US/en-US.json
 INTENT_URL = https://github.com/kercre123/wire-pod/raw/refs/heads/main/chipper/intent-data/en-US.json
 
-all: $(MODEL_UNZIPPED) $(INTENT_JSON) vic-cloud vic-gateway
+all: $(MODEL_UNZIPPED) $(INTENT_JSON) vic-cloud
 
 $(MODEL_UNZIPPED):
 	mkdir -p build/en-US
@@ -24,13 +24,16 @@ $(INTENT_JSON):
 	mkdir -p build/en-US
 	wget -nc -O $(INTENT_JSON) $(INTENT_URL)
 
+gettoolchain:
+	./get-deps.sh
+
 voskopusbuild:
 	./build-voskopus.sh
 
 go_deps:
 	echo `go version` && cd $(PWD) && go mod download
 
-vic-cloud: voskopusbuild go_deps
+vic-cloud: gettoolchain voskopusbuild go_deps
 	CGO_ENABLED=1 GOARM=7 GOARCH=arm \
 	CC=${HOME}/.anki/vicos-sdk/dist/5.3.0-r07/prebuilt/bin/arm-oe-linux-gnueabi-clang \
 	CXX=${HOME}/.anki/vicos-sdk/dist/5.3.0-r07/prebuilt/bin/arm-oe-linux-gnueabi-clang++ \
@@ -42,13 +45,13 @@ vic-cloud: voskopusbuild go_deps
 	-tags nolibopusfile,vicos \
 	-ldflags '-w -s -linkmode internal -extldflags "-static" -r /anki/lib' \
 	-o build/vic-cloud \
-	cloud/main.go
+	cloud/*
 
 	#upx build/vic-cloud
 
 
-vic-gateway: go_deps
-	CGO_ENABLED=1 GOARM=7 GOARCH=arm CC=${HOME}/.anki/vicos-sdk/dist/5.3.0-r07/prebuilt/bin/arm-oe-linux-gnueabi-clang CXX=${HOME}/.anki/vicos-sdk/dist/5.3.0-r07/prebuilt/bin/arm-oe-linux-gnueabi-clang++ PKG_CONFIG_PATH="$(PWD)/voskopus/lib/pkgconfig" CGO_CFLAGS="-I$(PWD)/voskopus/include -I$(PWD)/voskopus/include/opus -I$(PWD)/voskopus/include/ogg" CGO_CXXFLAGS="-stdlib=libc++ -std=c++11" CGO_LDFLAGS="-L$(PWD)/voskopus/lib -L$(PWD)/armlibs/lib/arm-linux-gnueabi/android" go build -tags nolibopusfile,vicos -ldflags '-w -s -linkmode internal -extldflags "-static" -r /anki/lib' -o build/vic-gateway gateway/*.go
+#vic-gateway: go_deps
+#	CGO_ENABLED=1 GOARM=7 GOARCH=arm CC=${HOME}/.anki/vicos-sdk/dist/5.3.0-r07/prebuilt/bin/arm-oe-linux-gnueabi-clang CXX=${HOME}/.anki/vicos-sdk/dist/5.3.0-r07/prebuilt/bin/arm-oe-linux-gnueabi-clang++ PKG_CONFIG_PATH="$(PWD)/voskopus/lib/pkgconfig" CGO_CFLAGS="-I$(PWD)/voskopus/include -I$(PWD)/voskopus/include/opus -I$(PWD)/voskopus/include/ogg" CGO_CXXFLAGS="-stdlib=libc++ -std=c++11" CGO_LDFLAGS="-L$(PWD)/voskopus/lib -L$(PWD)/armlibs/lib/arm-linux-gnueabi/android" go build -tags nolibopusfile,vicos -ldflags '-w -s -linkmode internal -extldflags "-static" -r /anki/lib' -o build/vic-gateway gateway/*.go
 
-	#upx build/vic-gateway
+#	#upx build/vic-gateway
 
