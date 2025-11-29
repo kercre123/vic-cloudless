@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 
-if [[ ! -d ~/.anki/vicos-sdk/dist/5.3.0-r07 ]]; then
-  echo Getting deps...
-  mkdir ~/.anki/vicos-sdk/dist/5.3.0-r07
-  cd ~/.anki/vicos-sdk/dist/5.3.0-r07
-  wget https://froggitti.net/5.3.0-r07.tar.gz
-  gunzip 5.3.0-r07.tar.gz
-  tar -xvf 5.3.0-r07.tar
+TOOLCHAIN_VER="5.3.0-r07"
+
+if [[ ! -d ~/.anki/vicos-sdk/dist/$TOOLCHAIN_VER ]]; then
+  echo "Getting toolchain version $TOOLCHAIN_VER..."
+  mkdir -p ~/.anki/vicos-sdk/dist/$TOOLCHAIN_VER
+  cd ~/.anki/vicos-sdk/dist/$TOOLCHAIN_VER
+  wget -q --show-progress https://github.com/os-vector/wire-os-externals/releases/download/$TOOLCHAIN_VER/vicos-sdk_"$TOOLCHAIN_VER"_amd64-linux.tar.gz -O - | tar -xz
+  echo "Toolchain version $TOOLCHAIN_VER has been installed!"
+  exit
 else
-  echo You already have the 5.3.0-r07 toolchain installed. Exiting...
+  echo "Toolchain version $TOOLCHAIN_VER is already installed!"
   exit
 fi

@@ -8,11 +8,9 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"runtime"
 	"runtime/debug"
 	"strings"
-	"syscall"
 	"time"
 
 	extint "github.com/digital-dream-labs/vector-cloud/internal/proto/external_interface"
@@ -37,7 +35,7 @@ const (
 
 var (
 	robotHostname          string
-	signalHandler          chan os.Signal
+	signalHandlerGateway   chan os.Signal
 	demoKeyPair            *tls.Certificate
 	demoCertPool           *x509.CertPool
 	cloudCheckLimiter      *MultiLimiter
@@ -139,20 +137,7 @@ func cleanExit() {
 	os.Exit(0)
 }
 
-func main() {
-	log.Tag = "vic-gateway"
-	log.Println("Launching vic-gateway")
-
-	log.Println("Install crash reporter")
-	robot.InstallCrashReporter("vic-gateway")
-
-	signalHandler = make(chan os.Signal, 1)
-	signal.Notify(signalHandler, syscall.SIGTERM)
-	go func() {
-		sig := <-signalHandler
-		log.Println("Received signal:", sig)
-		cleanExit()
-	}()
+func mainGateway() {
 
 	if _, err := os.Stat(robot.GatewayCert); os.IsNotExist(err) {
 		log.Println("Cannot find cert:", robot.GatewayCert)

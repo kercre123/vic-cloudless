@@ -2,12 +2,10 @@ package main
 
 import (
 	"bytes"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"math/big"
 	"os"
 	"time"
 
@@ -52,16 +50,6 @@ type ClientTokenManager struct {
 	lastUpdatedTokens time.Time          `json:"-"`
 	forceClearFile    bool               `json:"-"`
 	limiter           *MultiLimiter      `json:"-"`
-}
-
-func randomString() string {
-	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	b := make([]byte, 20)
-	for i := range b {
-		n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
-		b[i] = charset[n.Int64()]
-	}
-	return string(b)
 }
 
 func (ctm *ClientTokenManager) Init() error {

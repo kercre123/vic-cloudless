@@ -4,11 +4,7 @@ Vector processing text all by himself.
 
 # Get deps
 
-**Install gcc, g++, cmake, make, automake, git, and wget.** After you do that, run this script to install the 5.2.1-r06 toolchain if you don't have it already:
-
-```
-./get-deps.sh
-```
+**Install gcc, g++, cmake, make, automake, git, pv, and wget.**
 
 # Build
 
