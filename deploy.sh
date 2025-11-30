@@ -33,7 +33,7 @@ rsync -e 'ssh -i ssh_root_key' -avr build/en-US root@$1:/anki/data/assets/cozmo_
 
 if [[ ${SWAPFILE} == "y" ]]; then
 	if [[ `ssh -i ssh_root_key root@$1 "swapon -s"` == "" ]]; then
-	   	#ssh -i ssh_root_key root@$1 "dd if=/dev/zero of=/data/swapfile bs=1024 count=200576"
+	   	ssh -i ssh_root_key root@$1 "dd if=/dev/zero of=/data/swapfile bs=1024 count=200576"
 		ssh -i ssh_root_key root@$1 "chmod 600 /data/swapfile"
 		ssh -i ssh_root_key root@$1 "mkswap /data/swapfile"
 		ssh -i ssh_root_key root@$1 "swapon /data/swapfile"
