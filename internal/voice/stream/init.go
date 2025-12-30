@@ -52,9 +52,9 @@ func (strm *Streamer) init(streamSize int) {
 			curFreq = vtr.GetFreq()
 			o, err := strconv.Atoi(curFreq)
 			if err == nil {
-				if o < 729600 {
+				if o < 1267200 {
 					underClockAfter = true
-					go vtr.SetFreq("729600", "600000")
+					go vtr.SetFreq("1267200", "800000")
 				}
 			}
 		}
@@ -79,4 +79,5 @@ func (strm *Streamer) init(streamSize int) {
 			}
 		}
 	}()
+
 }

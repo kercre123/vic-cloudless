@@ -18,8 +18,6 @@ Restart=no
 User=cloud
 Group=anki
 UMask=0002
-# maximum priority
-Nice=-20
 
 # VIC-1951
 # /factory/cloud has mode 440, which prevents us from reading it as the net user.

@@ -32,7 +32,7 @@ func DetectEndOfSpeech(chunk []byte) (stop bool, isActive bool) {
 		VADInst.SetMode(1)
 		VADExists = true
 	}
-	inactiveNumMax := 23
+	inactiveNumMax := 10
 	for _, chunk := range SplitVAD(chunk) {
 		active, err := VADInst.Process(16000, chunk)
 		OverallFrames++

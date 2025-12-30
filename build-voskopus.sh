@@ -139,15 +139,17 @@ function buildOPUS() {
 
 
 arch=armel
-if [[ ! -f "${ORIGPATH}/built/$arch/lib/libvosk.so" ]]; then
-    echo "Compiling VOSK dependencies for $arch"
-    prepareVOSKbuild_ARMARM64 "$arch"
-    doVOSKbuild "$arch"
-fi
+#if [[ ! -f "${ORIGPATH}/built/$arch/lib/libvosk.so" ]]; then
+#    echo "Compiling VOSK dependencies for $arch"
+#    prepareVOSKbuild_ARMARM64 "$arch"
+#    doVOSKbuild "$arch"
+#fi
+cd "${ORIGPATH}"
+mkdir -p build/armel
+mkdir -p built/armel
 buildOPUS "$arch"
 
 cd "${ORIGPATH}"
 cp -r built/armel/lib/libopus.so.0.10.1 ../build/libopus.so.0
-cp -r built/armel/lib/libvosk.so ../build/
 
 echo "Dependencies complete for $arch."
