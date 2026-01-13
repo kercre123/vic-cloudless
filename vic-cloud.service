@@ -10,6 +10,7 @@ ConditionFileIsExecutable=/usr/bin/logwrapper
 ConditionFileIsExecutable=/anki/bin/vic-cloud
 
 [Service]
+PermissionsStartOnly=true
 EnvironmentFile=/anki/etc/vic-cloud.env
 ExecStartPre=/usr/bin/mkdir -p /run/vic-cloud
 ExecStartPre=/bin/chown -R anki:anki /run/vic-cloud
