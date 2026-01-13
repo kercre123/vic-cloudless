@@ -1,13 +1,14 @@
 package stream
 
 import (
+	"fmt"
 	"strconv"
 
 	chippergrpc2 "github.com/digital-dream-labs/api/go/chipperpb"
 	"github.com/digital-dream-labs/vector-cloud/internal/voice/vtr"
 )
 
-// it works well at 533MHz, but transcription is instant at 730
+// transcription is instant at 1.3GHz
 var doFreqStuff bool = true
 
 // WIRE: main entrypoint for a request!
@@ -44,6 +45,7 @@ func (strm *Streamer) init(streamSize int) {
 	// 		}
 	// 	}
 	// }()
+	i := 0
 
 	go func() {
 		var curFreq string
@@ -59,8 +61,14 @@ func (strm *Streamer) init(streamSize int) {
 			}
 		}
 		for data := range strm.audioStream {
+			i++
+			thisi := i
 			text := vtr.Process(data)
+			if thisi != i {
+				continue
+			}
 			if text != "" {
+				fmt.Println("TEXT HAS BEEN PROCESSED, TEXT RECIEVED:", text)
 				intent, iParam, _ := vtr.ProcessTextAll(text, vtr.IntentList)
 				sendIntentGraphResponse(&chippergrpc2.IntentGraphResponse{
 					ResponseType: chippergrpc2.IntentGraphMode_INTENT,

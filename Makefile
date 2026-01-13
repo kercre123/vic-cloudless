@@ -2,7 +2,7 @@
 
 #https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
 
-SHERPA_URL = https://github.com/kercre123/vic-cloudless/releases/download/v0.0.1/sherpa.tar.gz
+SHERPA_URL = https://github.com/kercre123/vic-cloudless/releases/download/v0.0.1/sherpa-citrinet.tar.gz
 SHERPA_UNZIPPED = build/sherpa/.unzipped
 
 INTENT_JSON = build/en-US/en-US.json
@@ -20,9 +20,9 @@ gettoolchain:
 $(SHERPA_UNZIPPED):
 	mkdir -p build/
 	wget -q --show-progress $(SHERPA_URL)
-	tar -zxvf sherpa.tar.gz
+	tar -zxvf sherpa-citrinet.tar.gz
 	mv sherpa build/
-	rm -f sherpa.tar.gz
+	rm -f sherpa-citrinet.tar.gz
 	touch $(SHERPA_UNZIPPED)
 
 opusbuild:

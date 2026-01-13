@@ -16,6 +16,7 @@ chmod 600 ssh_root_key
 ssh -i ssh_root_key root@$1 "systemctl stop anki-robot.target && mount -o rw,remount / && mkdir -p /anki/data/assets/cozmo_resources/cloudless"
 scp -i ssh_root_key build/vic-cloud root@$1:/anki/bin/
 scp -i ssh_root_key sherpa-onnx.service root@$1:/lib/systemd/system/
+scp -i ssh_root_key vic-cloud.service root@$1:/lib/systemd/system/
 scp -i ssh_root_key build/lib* root@$1:/anki/lib/
 scp -i ssh_root_key extra/cloud.sudoers root@$1:/etc/sudoers.d/cloud
 scp -i ssh_root_key extra/setfreq root@$1:/usr/sbin/

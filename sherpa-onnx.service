@@ -10,7 +10,7 @@ After=vic-engine.service
 WorkingDirectory=/sherpa
 ExecStart=/usr/bin/logwrapper /sherpa/sherpa.sh
 Restart=no
-Nice=-20
+Nice=-10
 
 [Install]
 WantedBy=anki-robot.target
