@@ -1,82 +1,61 @@
 package vtr
 
 import (
-	"bytes"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 
-	"github.com/gorilla/websocket"
+	sherpa_onnx "github.com/k2-fsa/sherpa-onnx-go-linux"
+	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 )
 
 var voiceBuf []byte
 var overarchingIgnore bool
 var finalResp string
 
+var rec *sherpa_onnx.OfflineRecognizer
+
 func InitVosk() {
 	loadIntents()
+	config := sherpa.OfflineRecognizerConfig{
+		ModelConfig: sherpa_onnx.OfflineModelConfig{
+			NemoCTC: sherpa_onnx.OfflineNemoEncDecCtcModelConfig{
+				Model: "/sherpa/citrinet-256-ls/model.onnx",
+			},
+			Tokens:     "/sherpa/citrinet-256-ls/tokens.txt",
+			NumThreads: 3,
+		},
+		DecodingMethod: "greedy_search",
+	}
+	rec = sherpa.NewOfflineRecognizer(&config)
 }
 
-func sendUtterance(wsURL string, sr int, utterance []int16) string {
-	u, err := url.Parse(wsURL)
-	if err != nil {
-		return ""
-	}
-
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
-	if err != nil {
-		return ""
-	}
-	defer conn.Close()
-
+func sendUtterance(sr int, utterance []int16) string {
 	audio := int16ToFloat32BytesLE(utterance)
 
 	hdr := make([]byte, 8)
 	binary.LittleEndian.PutUint32(hdr[0:4], uint32(sr))
 	binary.LittleEndian.PutUint32(hdr[4:8], uint32(len(audio)))
 
-	payload := append(hdr, audio...)
+	str := sherpa.NewOfflineStream(rec)
+	str.AcceptWaveform(sr, audio)
+	rec.Decode(str)
+	result := str.GetResult()
 
-	if err := conn.WriteMessage(websocket.BinaryMessage, payload); err != nil {
-		return ""
-	}
-	_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-	var final string
-	for {
-		mt, msg, err := conn.ReadMessage()
-		if err != nil {
-			break
-		}
-		if mt == websocket.TextMessage {
-			var s sherpResp
-			json.Unmarshal(msg, &s)
-			final = s.Text
-			finalResp = s.Text
-			overarchingIgnore = false
-			fmt.Printf("%s", string(msg))
-			break
-		}
-	}
-
-	// stupid
-	_ = conn.WriteMessage(websocket.TextMessage, []byte("Done!"))
-	return final
+	finalResp = strings.ToLower(result.Text)
+	overarchingIgnore = false
+	return finalResp
 }
 
-func int16ToFloat32BytesLE(in []int16) []byte {
+func int16ToFloat32BytesLE(in []int16) []float32 {
 	f := make([]float32, len(in))
 	const scale = 1.0 / 32768.0
 	for i, s := range in {
 		f[i] = float32(s) * float32(scale)
 	}
-	var b bytes.Buffer
-	_ = binary.Write(&b, binary.LittleEndian, f)
-	return b.Bytes()
+	return f
 }
 
 func bytesToInt16LE(b []byte) []int16 {
@@ -89,18 +68,6 @@ func bytesToInt16LE(b []byte) []int16 {
 		out[i] = int16(b[i*2]) | int16(b[i*2+1])<<8
 	}
 	return out
-}
-
-type sherpResp struct {
-	Lang       string   `json:"lang"`
-	Emotion    string   `json:"emotion"`
-	Event      string   `json:"event"`
-	Text       string   `json:"text"`
-	Timestamps []any    `json:"timestamps"`
-	Durations  []any    `json:"durations"`
-	Tokens     []string `json:"tokens"`
-	YsLogProbs []any    `json:"ys_log_probs"`
-	Words      []any    `json:"words"`
 }
 
 func Process(chunk []byte) string {
@@ -121,7 +88,7 @@ func Process(chunk []byte) string {
 	voiceBuf = append(voiceBuf, chunk...)
 	if stop {
 		overarchingIgnore = true
-		go sendUtterance("ws://localhost:6006", 16000, bytesToInt16LE(voiceBuf))
+		go sendUtterance(16000, bytesToInt16LE(voiceBuf))
 	} else {
 		overarchingIgnore = false
 	}

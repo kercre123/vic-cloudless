@@ -300,6 +300,14 @@ github.com/jstemmer/go-junit-report v0.0.0-20190106144839-af01ea7f8024/go.mod h1
 github.com/jstemmer/go-junit-report v0.9.1/go.mod h1:Brl9GWCQeLvo8nXZwPNNblvFj/XSXhF0NWZEnDohbsk=
 github.com/jtolds/gls v4.20.0+incompatible/go.mod h1:QJZ7F/aHp+rZTRtaJ1ow/lLfFfVYBRgL+9YlvaHOwJU=
 github.com/julienschmidt/httprouter v1.2.0/go.mod h1:SYymIcj16QtmaHHD7aYtjjsJG7VTCxuUUipMqKk8s4w=
+github.com/k2-fsa/sherpa-onnx-go v1.12.22 h1:MiqMQO4ss5FzsV+NYI95kSrkJ/DthRQFCx4Ta8Bg6Xk=
+github.com/k2-fsa/sherpa-onnx-go v1.12.22/go.mod h1:B/ynRbVa5gpYoZYeYgY3zPi4MTfKk95UZueZDSIhbjk=
+github.com/k2-fsa/sherpa-onnx-go-linux v1.12.22 h1:On25i5dFoeQ9QPJXV/eFXRojpP6z1Rp7alYDRPgYDA8=
+github.com/k2-fsa/sherpa-onnx-go-linux v1.12.22/go.mod h1:NXEH2rsBgTdqY59YpPq6CtSBlBAXy/8a9FmpLERU97I=
+github.com/k2-fsa/sherpa-onnx-go-macos v1.12.22 h1:iI96ZUaOGpgj8d6DTkWt3NmeLh1YtK5WzXKG5mwffJw=
+github.com/k2-fsa/sherpa-onnx-go-macos v1.12.22/go.mod h1:ZOhUAXC62Unj0ZNfu6zxSFKcW96aXf7P3BsqiUyOBbE=
+github.com/k2-fsa/sherpa-onnx-go-windows v1.12.22 h1:0MNAZqWJq0ZA4b47rev1o1IFs9+qKYVF4N9dxA8lCQk=
+github.com/k2-fsa/sherpa-onnx-go-windows v1.12.22/go.mod h1:5AX7TU8+P/gInjglY1ijtWUM2b8iyR0QX4yEngzMe64=
 github.com/karrick/godirwalk v1.8.0/go.mod h1:H5KPZjojv4lE+QYImBI8xVtrBRgYrIVsaRPx4tDPEn4=
 github.com/karrick/godirwalk v1.10.3/go.mod h1:RoGL9dQei4vP9ilrpETWE8CLOZ1kiN0LhBygSwrAsHA=
 github.com/kisielk/errcheck v1.1.0/go.mod h1:EZBBE59ingxPouuu3KfxchcWSUPOHkagtvWXihfKN4Q=

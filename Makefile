@@ -2,8 +2,8 @@
 
 #https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
 
-SHERPA_URL = https://github.com/kercre123/vic-cloudless/releases/download/v0.0.1/sherpa-citrinet.tar.gz
-SHERPA_UNZIPPED = build/sherpa/.unzipped
+SHERPA_URL = https://github.com/kercre123/vic-cloudless/releases/download/v0.0.1/sherpa-shared-citrinet.tar.gz
+SHERPA_UNZIPPED = build/sherpa-shared-citrinet/.unzipped
 
 INTENT_JSON = build/en-US/en-US.json
 INTENT_URL = https://github.com/kercre123/wire-pod/raw/refs/heads/main/chipper/intent-data/en-US.json
@@ -20,9 +20,9 @@ gettoolchain:
 $(SHERPA_UNZIPPED):
 	mkdir -p build/
 	wget -q --show-progress $(SHERPA_URL)
-	tar -zxvf sherpa-citrinet.tar.gz
-	mv sherpa build/
-	rm -f sherpa-citrinet.tar.gz
+	tar -zxvf sherpa-shared-citrinet.tar.gz
+	mv sherpa-shared-citrinet build/
+	rm -f sherpa-shared-citrinet.tar.gz
 	touch $(SHERPA_UNZIPPED)
 
 opusbuild:
@@ -35,10 +35,10 @@ vic-cloud: gettoolchain opusbuild go_deps
 	CGO_ENABLED=1 GOARM=7 GOARCH=arm \
 	CC=${HOME}/.anki/vicos-sdk/dist/5.3.0-r07/prebuilt/bin/arm-oe-linux-gnueabi-clang \
 	CXX=${HOME}/.anki/vicos-sdk/dist/5.3.0-r07/prebuilt/bin/arm-oe-linux-gnueabi-clang++ \
-	PKG_CONFIG_PATH="$(PWD)/voskopus/built/armel/lib/pkgconfig" \
-	CGO_CFLAGS="-Wno-implicit-function-declaration -I$(PWD)/voskopus/built/armel/include -I$(PWD)/voskopus/built/armel/include/opus" \
+	PKG_CONFIG_PATH="$(PWD)/voskopus/built/armel/lib/pkgconfig:$(PWD)/sherpa/lib/pkgconfig" \
+	CGO_CFLAGS="-Wno-implicit-function-declaration -I$(PWD)/build/sherpa-shared-citrinet/include -I$(PWD)/voskopus/built/armel/include/opus" \
 	CGO_CXXFLAGS="-stdlib=libc++ -std=c++11" \
-	CGO_LDFLAGS="-L$(PWD)/voskopus/built/armel/lib -L$(PWD)/armlibs/lib/arm-linux-gnueabi/android" \
+	CGO_LDFLAGS="-L$(PWD)/voskopus/built/armel/lib -L$(PWD)/armlibs/lib/arm-linux-gnueabi/android -L$(PWD)/build/sherpa-shared-citrinet/lib" \
 	go build \
 	-tags nolibopusfile,vicos \
 	-ldflags '-w -s' \
