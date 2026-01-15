@@ -25,7 +25,7 @@ func InitVosk() {
 				Model: "/sherpa/citrinet-256-ls/model.onnx",
 			},
 			Tokens:     "/sherpa/citrinet-256-ls/tokens.txt",
-			NumThreads: 3,
+			NumThreads: 4,
 		},
 		DecodingMethod: "greedy_search",
 	}

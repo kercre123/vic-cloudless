@@ -54,9 +54,11 @@ func (strm *Streamer) init(streamSize int) {
 			curFreq = vtr.GetFreq()
 			o, err := strconv.Atoi(curFreq)
 			if err == nil {
-				if o < 1267200 {
+				// not ALL the way to 1.3GHz
+				// still fast enough
+				if o < 1094400 {
 					underClockAfter = true
-					go vtr.SetFreq("1267200", "800000")
+					go vtr.SetFreq("1094400", "600000")
 				}
 			}
 		}
