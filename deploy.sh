@@ -7,11 +7,12 @@ if [[ $1 == "" ]]; then
 	exit 1
 fi
 
-if [[ ! -f ssh_root_key ]]; then
-	wget modder.my.to/ssh_root_key
-fi
-
 chmod 600 ssh_root_key
+
+if ! ssh -i ssh_root_key root@$1 '[[ "$(uname -a)" =~ "Vector" ]]'; then
+	echo "This is not a Vector, or you have given an invalid IP."
+	exit 1
+fi
 
 ssh -i ssh_root_key root@$1 "systemctl stop anki-robot.target && mount -o rw,remount / && mkdir -p /anki/data/assets/cozmo_resources/cloudless && mkdir -p /sherpa"
 scp -i ssh_root_key build/vic-cloud root@$1:/anki/bin/

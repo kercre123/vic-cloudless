@@ -8,8 +8,12 @@ import (
 	"github.com/digital-dream-labs/vector-cloud/internal/voice/vtr"
 )
 
-// transcription is instant at 1.3GHz
+// transcription is instant at >1GHz
 var doFreqStuff bool = true
+
+// set to 1267200 and 800000 for maximum Juice
+var cpuUpClock int = 1094400
+var memUpClock int = 700000
 
 // WIRE: main entrypoint for a request!
 // we are keeping the OG code commented in case we want to make some sort of hybrid solution
@@ -54,11 +58,9 @@ func (strm *Streamer) init(streamSize int) {
 			curFreq = vtr.GetFreq()
 			o, err := strconv.Atoi(curFreq)
 			if err == nil {
-				// not ALL the way to 1.3GHz
-				// still fast enough
-				if o < 1094400 {
+				if o < cpuUpClock {
 					underClockAfter = true
-					go vtr.SetFreq("1094400", "600000")
+					go vtr.SetFreq(strconv.Itoa(cpuUpClock), strconv.Itoa(memUpClock))
 				}
 			}
 		}

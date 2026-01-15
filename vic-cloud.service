@@ -19,7 +19,7 @@ ExecStopPost=/anki/bin/vic-on-exit
 Restart=no
 User=cloud
 Group=anki
-Nice=-10
+Nice=-13
 UMask=0002
 
 # VIC-1951
