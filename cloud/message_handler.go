@@ -2661,6 +2661,23 @@ func (service *rpcService) EnableMirrorMode(ctx context.Context, request *extint
 	return response, nil
 }
 
+// CaptureJPEGBytes grabs one camera frame as JPEG for Xiaozhi vision (analyze_photo).
+// Same path as CaptureSingleImage / WirePod DoGetImage.
+func CaptureJPEGBytes(ctx context.Context, highRes bool) ([]byte, error) {
+	_ = ctx
+	svc := &rpcService{}
+	resp, err := svc.CaptureSingleImage(nil, &extint.CaptureSingleImageRequest{
+		EnableHighResolution: highRes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil || len(resp.Data) == 0 {
+		return nil, fmt.Errorf("empty camera frame")
+	}
+	return append([]byte(nil), resp.Data...), nil
+}
+
 // Capture a single image using the camera
 func (service *rpcService) CaptureSingleImage(ctx context.Context, request *extint.CaptureSingleImageRequest) (*extint.CaptureSingleImageResponse, error) {
 	// Enable image stream

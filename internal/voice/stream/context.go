@@ -36,7 +36,9 @@ func (strm *Streamer) sendAudio(samples []byte) error {
 // the current buffer without stalling if the GRPC streaming routine is blocked on
 // something and not ready for more audio yet
 func (strm *Streamer) bufferRoutine(streamSize int) {
-	defer close(strm.byteChan)
+	// Do NOT close byteChan — AddSamples may still run after micDone/ctx cancel
+	// (AudioDone races, duplicate hotword, late mic packets). Closing it panics:
+	// "send on closed channel" and kills vic-cloud.
 	defer close(strm.audioStream)
 	audioBuf := make([]byte, 0, streamSize*2)
 	// function to enable/disable streaming case depending on whether we have enough bytes
@@ -56,6 +58,18 @@ func (strm *Streamer) bufferRoutine(streamSize int) {
 			audioBuf = audioBuf[streamSize:]
 		case buf := <-strm.byteChan:
 			audioBuf = append(audioBuf, buf...)
+		case <-strm.micDone:
+			// Flush remaining full chunks, then exit so audioStream closes and
+			// Xiaozhi/Vosk can ListenStop without waiting for stream timeout.
+			for len(audioBuf) >= streamSize {
+				select {
+				case strm.audioStream <- audioBuf[:streamSize]:
+					audioBuf = audioBuf[streamSize:]
+				case <-strm.ctx.Done():
+					return
+				}
+			}
+			return
 		case <-strm.ctx.Done():
 			return
 		}
@@ -63,7 +77,22 @@ func (strm *Streamer) bufferRoutine(streamSize int) {
 }
 
 func (strm *Streamer) addBytes(buf []byte) {
-	strm.byteChan <- buf
+	if strm.closed {
+		return
+	}
+	// Never block forever if mic/turn already ended; never send on a closed chan.
+	select {
+	case <-strm.ctx.Done():
+		return
+	case <-strm.micDone:
+		return
+	default:
+	}
+	select {
+	case strm.byteChan <- buf:
+	case <-strm.ctx.Done():
+	case <-strm.micDone:
+	}
 }
 
 func (strm *Streamer) testRoutine(streamSize int) {

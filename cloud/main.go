@@ -25,6 +25,7 @@ import (
 	"github.com/digital-dream-labs/vector-cloud/internal/token"
 	"github.com/digital-dream-labs/vector-cloud/internal/voice"
 	"github.com/digital-dream-labs/vector-cloud/internal/voice/vtr"
+	"github.com/digital-dream-labs/vector-cloud/internal/xiaozhi"
 
 	"github.com/gwatts/rootcerts"
 )
@@ -97,10 +98,19 @@ func main() {
 	}
 
 	log.Println("Starting up")
-	fmt.Println("loading vosk...")
-	vtr.InitVosk()
+
+	// Load Xiaozhi config early so all subsystems can check Enabled().
+	xiaozhiCfg := xzcloudinit()
+	if xiaozhiCfg.Enabled {
+		log.Println("Xiaozhi integration enabled; endpoint:", xiaozhiCfg.Endpoint)
+		// Xiaozhi replaces local STT — skip Vosk model (~tens of MB RSS).
+		log.Println("Xiaozhi enabled — skipping Vosk STT model load (RAM)")
+	} else {
+		fmt.Println("loading vosk...")
+		vtr.InitVosk()
+		fmt.Println("worked maybe")
+	}
 	go vtr.WeatherFetcher()
-	fmt.Println("worked maybe")
 
 	robot.InstallCrashReporter(log.Tag)
 
@@ -214,4 +224,24 @@ func signalHandler() {
 		robot.UninstallCrashReporter()
 		os.Exit(0)
 	}()
+}
+
+// xzcloudinit loads the Xiaozhi config and optionally runs a background OTA check.
+func xzcloudinit() xiaozhi.Config {
+	cfg := xiaozhi.LoadConfig()
+	if !cfg.Enabled {
+		return cfg
+	}
+	// Wire camera capture for MCP self.camera.analyze_photo (Xiaozhi vision Explain).
+	xiaozhi.SetJPEGCapture(CaptureJPEGBytes)
+	if cfg.DeviceID != "" && cfg.ClientID != "" {
+		go func() {
+			if err := xiaozhi.OtaCheck(&cfg); err != nil {
+				log.Println("Xiaozhi OTA check:", err)
+			} else {
+				log.Println("Xiaozhi OTA check OK")
+			}
+		}()
+	}
+	return cfg
 }

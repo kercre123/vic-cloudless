@@ -7,44 +7,99 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	vosk "github.com/os-vector/vosk-api/go"
 )
 
-var model *vosk.VoskModel
-var rec *vosk.VoskRecognizer
+var (
+	voskMu sync.Mutex
+	model  *vosk.VoskModel
+	rec    *vosk.VoskRecognizer
+)
 
+const voskModelPath = "/anki/data/assets/cozmo_resources/cloudless/en-US/model"
+
+// InitVosk loads the STT model at process start (Xiaozhi-off path).
 func InitVosk() {
+	if err := EnsureVosk(); err != nil {
+		log.Fatal("vosk init:", err)
+	}
+}
+
+// EnsureVosk lazy-loads the model + recognizer if not already loaded.
+func EnsureVosk() error {
+	voskMu.Lock()
+	defer voskMu.Unlock()
+	if model != nil && rec != nil {
+		return nil
+	}
 	loadIntents()
-	var err error
-	model, err = vosk.NewModel("/anki/data/assets/cozmo_resources/cloudless/en-US/model")
+	m, err := vosk.NewModel(voskModelPath)
 	if err != nil {
-		log.Fatal("model not found", err)
+		return fmt.Errorf("model %s: %w", voskModelPath, err)
 	}
-	rec, err = vosk.NewRecognizerGrm(model, 16000, GetGrammerList("en-US"))
-	//rec, err = vosk.NewRecognizer(model, 16000)
+	// GetGrammerList uses the package-level model for FindWord — assign before calling.
+	model = m
+	r, err := vosk.NewRecognizerGrm(m, 16000, GetGrammerList("en-US"))
 	if err != nil {
-		log.Fatal("error making rec:", err)
+		model = nil
+		m.Free()
+		return fmt.Errorf("recognizer: %w", err)
 	}
-	// does this actually do anything
-	rec.SetMaxAlternatives(0)
-	rec.SetEndpointerDelays(3, 0, 0)
+	r.SetMaxAlternatives(0)
+	r.SetEndpointerDelays(3, 0, 0)
+	rec = r
+	log.Println("[Vosk] model loaded:", voskModelPath)
+	return nil
+}
+
+// UnloadVosk frees the model to reclaim RAM (blackjack gameMode exit).
+func UnloadVosk() {
+	voskMu.Lock()
+	defer voskMu.Unlock()
+	if rec != nil {
+		rec.Free()
+		rec = nil
+	}
+	if model != nil {
+		model.Free()
+		model = nil
+	}
+	log.Println("[Vosk] model unloaded")
+}
+
+// VoskLoaded reports whether the STT model is currently in memory.
+func VoskLoaded() bool {
+	voskMu.Lock()
+	defer voskMu.Unlock()
+	return model != nil && rec != nil
 }
 
 func Process(chunk []byte) string {
+	voskMu.Lock()
+	defer voskMu.Unlock()
+	if rec == nil || model == nil {
+		return ""
+	}
 	if len(chunk) == 0 {
 		fmt.Println("empty chunk")
 		return ""
 	}
-	// todo: experiment with giving acceptwaveform smaller or bigger chunks
 	stop, _ := DetectEndOfSpeech(chunk)
 	rec.AcceptWaveform(chunk)
 	if stop {
 		var jres map[string]interface{}
 		json.Unmarshal([]byte(rec.FinalResult()), &jres)
-		transcribedText := jres["text"].(string)
+		transcribedText, _ := jres["text"].(string)
 		fmt.Println("transcribed text: " + transcribedText)
-		go rec.Reset()
+		go func() {
+			voskMu.Lock()
+			if rec != nil {
+				rec.Reset()
+			}
+			voskMu.Unlock()
+		}()
 		return transcribedText
 	}
 	return ""

@@ -11,6 +11,8 @@ type Streamer struct {
 	conn        Conn
 	byteChan    chan []byte
 	audioStream chan []byte
+	micDone     chan struct{}
+	micDoneOnce sync.Once
 	respOnce    sync.Once
 	closed      bool
 	opts        options

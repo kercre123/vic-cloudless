@@ -36,16 +36,14 @@ func GetGrammerList(lang string) string {
 		text := GetText(str)
 		wors := strings.Split(text, " ")
 		for _, wor := range wors {
-			found := model.FindWord(wor)
-			if found != -1 {
+			if model == nil || model.FindWord(wor) != -1 {
 				wordsList = append(wordsList, wor)
 			}
 		}
 	}
 	// add numbers
 	for _, wor := range NumbersEN_US {
-		found := model.FindWord(wor)
-		if found != -1 {
+		if model == nil || model.FindWord(wor) != -1 {
 			wordsList = append(wordsList, wor)
 		}
 	}

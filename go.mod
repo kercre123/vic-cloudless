@@ -14,6 +14,7 @@ require (
 	github.com/fsouza/go-dockerclient v1.12.1
 	github.com/golang/protobuf v1.5.4
 	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/grpc-ecosystem/grpc-gateway v1.16.0
 	github.com/gwatts/rootcerts v0.0.0-20250301185136-8180986b1a75
 	github.com/maxhawkins/go-webrtcvad v0.0.0-20210121163624-be60036f3083

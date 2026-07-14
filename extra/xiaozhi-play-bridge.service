@@ -1,0 +1,13 @@
+[Unit]
+Description=Xiaozhi play-flag bridge for vic-anim
+PartOf=anki-robot.target
+After=vic-cloud.service
+
+[Service]
+Type=simple
+ExecStart=/anki/bin/xiaozhi-play-bridge.sh
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=anki-robot.target

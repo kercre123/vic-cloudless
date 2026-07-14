@@ -11,6 +11,7 @@ import (
 	"github.com/digital-dream-labs/vector-cloud/internal/config"
 	"github.com/digital-dream-labs/vector-cloud/internal/log"
 	"github.com/digital-dream-labs/vector-cloud/internal/voice/stream"
+	"github.com/digital-dream-labs/vector-cloud/internal/xiaozhi"
 
 	"github.com/digital-dream-labs/api-clients/chipper"
 	pb "github.com/digital-dream-labs/api/go/chipperpb"
@@ -173,7 +174,39 @@ procloop:
 			switch msg.msg.Tag() {
 			case cloud.MessageTag_Hotword:
 				// hotword = get ready to stream data
-				if strm != nil {
+				if xiaozhi.Enabled() {
+					// Already mid-listen with mic flowing: ignore duplicate Hey Vector
+					// so we do not abort the utterance before STT completes.
+					// If listen started but mic never uplinked, do NOT ignore — restart.
+					if xiaozhi.ShouldIgnoreDuplicateHotword() {
+						log.Println("[Xiaozhi][Mic] ignore duplicate hotword (already listening)")
+						continue
+					}
+					if xiaozhi.InListenTurn() {
+						log.Println("[Xiaozhi][Mic] listen without mic uplink — restarting")
+					}
+					// ESP32-style barge-in during TTS: abort speak, then fresh listen.
+					// Voice false-wake during TTS is suppressed in micDataSystem while busy;
+					// backpack button FakeTrigger still reaches here.
+					if xiaozhi.BargeIn("wake_word_detected") {
+						if strm != nil {
+							if err := strm.Close(); err != nil {
+								log.Println("Error closing context after barge-in:")
+							}
+							strm = nil
+						}
+					} else if xiaozhi.ShouldHoldHotword() {
+						log.Println("[Xiaozhi][TTS] ignore hotword — speak in progress")
+						continue
+					} else if strm != nil {
+						// Expected in continuous mode: noaudio kept the Vector stream open.
+						log.Println("[Xiaozhi][Mic] continuous relisten — replacing open stream")
+						if err := strm.Close(); err != nil {
+							log.Println("Error closing context:")
+						}
+						strm = nil
+					}
+				} else if strm != nil {
 					log.Println("Got hotword event while already streaming, weird...")
 					if err := strm.Close(); err != nil {
 						log.Println("Error closing context:")
@@ -281,6 +314,16 @@ procloop:
 
 			// send intent to AI
 			p.writeResponse(cloud.NewMessageWithResult(intent.result))
+
+			// Xiaozhi: intent_system_noaudio only closes listen UI so long TTS does not
+			// hit NoCloud. Keep the Vector stream open so a follow-up MCP self-control
+			// OnIntent (e.g. fireworks) is still delivered — otherwise process.go
+			// nils strm here and logs "Ignoring result from prior stream".
+			if xiaozhi.Enabled() && intent.result != nil &&
+				intent.result.Intent == "intent_system_noaudio" {
+				log.Println("[Xiaozhi][Mic] keep Vector stream after noaudio (await MCP)")
+				continue
+			}
 
 			// stop streaming until we get another hotword event
 			if err := strm.Close(); err != nil {

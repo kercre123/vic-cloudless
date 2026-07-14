@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 
 	"github.com/digital-dream-labs/vector-cloud/internal/util"
 
@@ -15,6 +14,7 @@ func NewStreamer(ctx context.Context, receiver Receiver, streamSize int, opts ..
 	strm := &Streamer{
 		byteChan:    make(chan []byte),
 		audioStream: make(chan []byte, 10),
+		micDone:     make(chan struct{}),
 		receiver:    receiver}
 
 	// set default connector before applying options
@@ -44,6 +44,9 @@ func (strm *Streamer) AddSamples(samples []int16) {
 		// no external audio input during connection check
 		return
 	}
+	if strm.closed {
+		return
+	}
 	var buf bytes.Buffer
 	binary.Write(&buf, binary.LittleEndian, samples)
 	strm.addBytes(buf.Bytes())
@@ -52,6 +55,9 @@ func (strm *Streamer) AddSamples(samples []int16) {
 func (strm *Streamer) AddBytes(bytes []byte) {
 	if strm.opts.checkOpts != nil {
 		// no external audio input during connection check
+		return
+	}
+	if strm.closed {
 		return
 	}
 	strm.addBytes(bytes)
@@ -67,11 +73,13 @@ func (strm *Streamer) Close() error {
 }
 
 func (strm *Streamer) CloseSend() error {
-	// ignore if conn check?
 	if strm.conn != nil {
 		return strm.conn.CloseSend()
 	}
-	return errors.New("cannot CloseSend on nil stream")
+	// Xiaozhi / local Vosk: mic finished — close audio stream without cancelling
+	// the turn context (so STT→TTS can continue after AudioDone).
+	strm.micDoneOnce.Do(func() { close(strm.micDone) })
+	return nil
 }
 
 // SetVerbose enables or disables verbose logging

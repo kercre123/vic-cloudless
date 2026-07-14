@@ -9,12 +9,20 @@ After=vic-engine.service
 ConditionFileIsExecutable=/usr/bin/logwrapper
 ConditionFileIsExecutable=/anki/bin/vic-cloud
 
+# Cap restart storms if the process keeps dying (OOM loop, bad binary, etc.)
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
 [Service]
 EnvironmentFile=/anki/etc/vic-cloud.env
-ExecStartPre=/usr/bin/mkdir -p /run/vic-cloud
+# Created as root and chowned to User=/Group= (ExecStartPre mkdir runs as cloud → EACCES)
+RuntimeDirectory=vic-cloud
+RuntimeDirectoryMode=0775
 ExecStart=/usr/bin/logwrapper /anki/bin/vic-cloud $VIC_CLOUD_OPTS
 ExecStopPost=/anki/bin/vic-on-exit
-Restart=no
+# OOM (SIGKILL) / crash: auto-recover instead of staying failed (phase 4)
+Restart=on-failure
+RestartSec=3
 User=cloud
 Group=anki
 UMask=0002
@@ -27,7 +35,9 @@ Nice=-20
 # we instead just allow vic-cloud to bypass the read-search restriction on dirs.
 # We need to fix the permissions in the next Factory OS and can alse re-visit this
 # decision post 1.0
-AmbientCapabilities=CAP_DAC_READ_SEARCH
+# CAP_NET_BIND_SERVICE: gateway listens on :443 (panic without it as User=cloud)
+# CAP_DAC_OVERRIDE: create /run/xiaozhi-play (+ relisten flags) — /run is root:root 0755
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_DAC_READ_SEARCH CAP_SYS_BOOT CAP_DAC_OVERRIDE
 
 [Install]
 WantedBy=anki-robot.target
