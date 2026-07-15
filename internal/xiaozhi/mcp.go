@@ -113,7 +113,11 @@ func (h *MCPHandler) ProcessMessage(msg ServerMessage) (string, error) {
 		return "", h.HandleToolsList(msg)
 	case "tools/call":
 		return h.HandleToolCall(msg)
-	case "notifications/initialized", "notifications/cancelled":
+	case "notifications/initialized":
+		return "", nil
+	case "notifications/cancelled":
+		AbandonPostCaptureAwait("mcp_notifications_cancelled")
+		log.Println("[Xiaozhi] MCP notifications/cancelled — cleared post-camera wait")
 		return "", nil
 	default:
 		_ = h.sendResult(msg.ID, map[string]interface{}{})
@@ -250,6 +254,7 @@ func (h *MCPHandler) HandleToolCall(msg ServerMessage) (string, error) {
 	var params map[string]string
 	var text string
 	isError := false
+	markPostCaptureDone := false
 
 	switch toolName {
 	case "self.get_device_status":
@@ -298,8 +303,9 @@ func (h *MCPHandler) HandleToolCall(msg ServerMessage) (string, error) {
 				text = fmt.Sprintf(`{"error":%q}`, err.Error())
 				log.Println("[Xiaozhi] MCP analyze_photo error:", err)
 			} else {
-				// Pass server body through (ESP32 style) so the LLM can speak it.
+				// Plain analysis text for the LLM to speak (ESP32 Explain style).
 				text = result
+				markPostCaptureDone = true
 				log.Println("[Xiaozhi] MCP self.camera.analyze_photo OK")
 			}
 		}
@@ -347,6 +353,10 @@ func (h *MCPHandler) HandleToolCall(msg ServerMessage) (string, error) {
 			{"type": "text", "text": text},
 		},
 		"isError": isError,
+	}
+	// Unblock analysis Opus before the WS reply — server may push audio immediately.
+	if markPostCaptureDone {
+		MarkPostCaptureToolDone()
 	}
 	if err := h.sendResult(msg.ID, result); err != nil {
 		return "", err

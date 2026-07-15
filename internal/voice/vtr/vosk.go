@@ -29,6 +29,15 @@ func InitVosk() {
 
 // EnsureVosk lazy-loads the model + recognizer if not already loaded.
 func EnsureVosk() error {
+	return ensureVoskWithGrammar(false)
+}
+
+// EnsureVoskBlackjack loads Vosk with a tiny hit/stand grammar (RAM-friendlier).
+func EnsureVoskBlackjack() error {
+	return ensureVoskWithGrammar(true)
+}
+
+func ensureVoskWithGrammar(blackjackOnly bool) error {
 	voskMu.Lock()
 	defer voskMu.Unlock()
 	if model != nil && rec != nil {
@@ -41,7 +50,11 @@ func EnsureVosk() error {
 	}
 	// GetGrammerList uses the package-level model for FindWord — assign before calling.
 	model = m
-	r, err := vosk.NewRecognizerGrm(m, 16000, GetGrammerList("en-US"))
+	grammar := GetGrammerList("en-US")
+	if blackjackOnly {
+		grammar = GetBlackjackGrammarList()
+	}
+	r, err := vosk.NewRecognizerGrm(m, 16000, grammar)
 	if err != nil {
 		model = nil
 		m.Free()
@@ -50,7 +63,11 @@ func EnsureVosk() error {
 	r.SetMaxAlternatives(0)
 	r.SetEndpointerDelays(3, 0, 0)
 	rec = r
-	log.Println("[Vosk] model loaded:", voskModelPath)
+	if blackjackOnly {
+		log.Println("[Vosk] model loaded (blackjack grammar):", voskModelPath)
+	} else {
+		log.Println("[Vosk] model loaded:", voskModelPath)
+	}
 	return nil
 }
 

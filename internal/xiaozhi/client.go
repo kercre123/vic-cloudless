@@ -165,6 +165,18 @@ func (c *Client) DrainEventChannels() {
 	}
 }
 
+// DrainAudioChannel discards queued Opus TTS frames only (keep TTS/LLM/MCP).
+func (c *Client) DrainAudioChannel() (n int) {
+	for {
+		select {
+		case <-c.audioCh:
+			n++
+		default:
+			return n
+		}
+	}
+}
+
 // SessionID returns the session_id received from the server hello.
 func (c *Client) SessionID() string { return c.sessionID }
 

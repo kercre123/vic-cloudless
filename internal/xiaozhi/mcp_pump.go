@@ -2,14 +2,15 @@ package xiaozhi
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/digital-dream-labs/vector-cloud/internal/log"
 )
 
 // runMCPPump answers MCP JSON-RPC for the life of the WSS connection (ESP32-style).
-// Turn no longer exclusively owns mcpCh — without this pump, silence STT timeouts and
-// DrainEventChannels used to drop initialize/tools/list so the LLM claimed "no camera".
+// tools/call runs in a goroutine so notifications/cancelled can be handled while
+// analyze_photo is still capturing (server cancels slow tools; otherwise TTS never comes).
 func runMCPPump(ctx context.Context, c *Client, h *MCPHandler) {
 	if c == nil || h == nil {
 		return
@@ -24,6 +25,43 @@ func runMCPPump(ctx context.Context, c *Client, h *MCPHandler) {
 			if !ok {
 				return
 			}
+			method := msg.Method
+			if method == "" && msg.Params != nil {
+				if m, ok := msg.Params["name"].(string); ok {
+					method = "tools/call:" + m
+				}
+			}
+			if method != "" {
+				log.Println("[Xiaozhi] MCP pump ←", method)
+			}
+
+			if method == "notifications/cancelled" {
+				log.Println("[Xiaozhi] MCP cancelled by server — abandon post-camera await")
+				AbandonPostCaptureAwait("mcp_notifications_cancelled")
+				continue
+			}
+
+			if method == "tools/call" || strings.HasPrefix(method, "tools/call:") {
+				m := msg
+				go func() {
+					intent, err := h.ProcessMessage(m)
+					if err != nil {
+						log.Println("[Xiaozhi] MCP tools/call error:", err)
+						return
+					}
+					if intent == "" {
+						return
+					}
+					act := h.TakePendingAction()
+					if act.Intent == "" {
+						act.Intent = intent
+					}
+					NoteMCPIntentQueued(act.Intent, act.Params)
+					log.Println("[Xiaozhi] MCP action queued (await TTS confirmation):", act.Intent)
+				}()
+				continue
+			}
+
 			intent, err := h.ProcessMessage(msg)
 			if err != nil {
 				log.Println("[Xiaozhi] MCP pump error:", err)

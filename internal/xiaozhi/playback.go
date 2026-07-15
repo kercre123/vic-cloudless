@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -26,11 +27,13 @@ const (
 	RelistenFlagPath    = "/run/vic-cloud/xiaozhi-relisten"
 	RelistenPendingPath = "/run/vic-cloud/xiaozhi-relisten-pending"
 
-	// Sliding window: keep ~8s of PCM ahead of estimated playhead; punch already-
-	// played bytes so tmpfs does not hold a full 1–2MB story in RAM.
-	pcmWindowAheadBytes = 256 * 1024  // ~8s @ 16kHz s16le
-	pcmPunchKeepBytes   = 64 * 1024   // leave a cushion behind playhead
-	pcmHardCapBytes     = 1536 * 1024 // ~48s; abort TTS rather than OOM/fault
+	// Balanced window for 426MB Vector (2026-07-15 mitigate pack):
+	// Between old ~8s/40k portal (LMK risk) and trial ~4s/20k (ALSA underrun/SIGILL).
+	// Still streams long audio via punch+throttle; soft-capped in turn.go (~100s).
+	pcmWindowAheadBytes = 192 * 1024 // ~6s @ 16kHz s16le
+	pcmPunchKeepBytes   = 48 * 1024  // ~1.5s cushion
+	pcmHardCapBytes          = 1024 * 1024 // ~32s unpunched live
+	pcmHardCapPunchFailBytes = 3 * 1024 * 1024 // ~96s if punch unsupported
 
 	SilencePrimeChunkBytes = 1024
 	SilencePrimeChunks     = 3
@@ -43,6 +46,14 @@ var (
 	streamStartAt  time.Time
 	pcmPunchedTo   int64
 	pcmPunchFailed bool
+
+	// ESP32-style: hold Opus only during JPEG capture (+ shutter). After tool
+	// reply, stream analysis TTS normally — never CancelPlayback / oneshot.
+	streamSuspend             atomic.Bool
+	awaitPostCaptureStream    atomic.Bool
+	postCaptureToolDone       atomic.Bool
+	postCaptureResumeUnixNano atomic.Int64
+	postCaptureToolDoneNano   atomic.Int64
 )
 
 func clearStreamFlags() {
@@ -123,9 +134,157 @@ func StreamStart() error {
 // ErrPCMHardCap is returned when the on-disk PCM window would exceed pcmHardCapBytes.
 var ErrPCMHardCap = fmt.Errorf("pcm hard cap reached")
 
+func playbackBusyFile() bool {
+	if _, err := os.Stat(BusyPath); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/run/xiaozhi-busy"); err == nil {
+		return true
+	}
+	return false
+}
+
+// SuspendPlaybackForCapture soft-ends intro ASAP so tools/call finishes before
+// the Xiaozhi server notifications/cancelled timeout (~10s).
+func SuspendPlaybackForCapture() {
+	awaitPostCaptureStream.Store(false)
+	postCaptureToolDone.Store(false)
+	postCaptureToolDoneNano.Store(0)
+
+	streamSuspend.Store(true)
+
+	if playbackBusyFile() {
+		log.Println("[Xiaozhi] analyze_photo: soft StreamEnd before camera")
+		_ = StreamEnd()
+		time.Sleep(250 * time.Millisecond)
+	} else {
+		// Brief arm if intro TTS just starting.
+		armDeadline := time.Now().Add(800 * time.Millisecond)
+		for time.Now().Before(armDeadline) {
+			if playbackBusyFile() {
+				log.Println("[Xiaozhi] analyze_photo: soft StreamEnd before camera")
+				_ = StreamEnd()
+				time.Sleep(250 * time.Millisecond)
+				break
+			}
+			time.Sleep(40 * time.Millisecond)
+		}
+	}
+	CleanupPlaybackFiles()
+	ClearCancelFlags()
+	_ = os.Remove(BusyPath)
+	_ = os.Remove("/run/xiaozhi-busy")
+	SetPlaying(false)
+	time.Sleep(120 * time.Millisecond)
+}
+
+// ResumePlaybackAfterCapture frees the speaker; Opus stays dropped until the
+// MCP tool reply is ready, then turn.go streams analysis TTS (no oneshot).
+func ResumePlaybackAfterCapture() {
+	ClearCancelFlags()
+	CleanupPlaybackFiles()
+	streamSuspend.Store(false)
+	awaitPostCaptureStream.Store(true)
+	postCaptureToolDone.Store(false)
+	postCaptureToolDoneNano.Store(0)
+	postCaptureResumeUnixNano.Store(time.Now().UnixNano())
+	log.Println("[Xiaozhi] analyze_photo: resume — stream analysis after tool reply")
+	time.Sleep(300 * time.Millisecond)
+}
+
+// PreferOneshotAfterCapture always false — ESP32-style stream only (oneshot
+// PlayPCMFile bloated anim RAM and triggered yellow fault countdown).
+func PreferOneshotAfterCapture() bool {
+	return false
+}
+
+// ClearPostCaptureOneshot is a no-op kept for call-site compatibility.
+func ClearPostCaptureOneshot() {}
+
+// MarkPostCaptureToolDone allows analysis Opus after the vision result is ready.
+// Do NOT drain audioCh — analysis frames may already be queued (ESP32 keeps them).
+func MarkPostCaptureToolDone() {
+	if postCaptureToolDone.Swap(true) {
+		return
+	}
+	postCaptureToolDoneNano.Store(time.Now().UnixNano())
+	log.Println("[Xiaozhi] analyze_photo: tool reply ready — stream analysis TTS")
+}
+
+// PostCaptureToolDone is true after MarkPostCaptureToolDone.
+func PostCaptureToolDone() bool {
+	return postCaptureToolDone.Load()
+}
+
+// IgnorePrematureTTSStop ignores intro/stop until analysis playback is armed.
+// Must stay true after MarkPostCaptureToolDone: a late stop from Soft StreamEnd
+// otherwise ends the turn and analysis Opus never plays (silent hang).
+func IgnorePrematureTTSStop() bool {
+	return streamSuspend.Load() || awaitPostCaptureStream.Load()
+}
+
+// DropPostCaptureOpus drops Opus only while camera capture holds the speaker.
+// Do not gate on toolDone — analysis frames can arrive in the same instant as
+// sendResult returns and were dropped (silent hang after tool reply ready).
+func DropPostCaptureOpus() bool {
+	return streamSuspend.Load()
+}
+
+// AwaitPostCaptureStream is true after camera until analysis stream is armed.
+func AwaitPostCaptureStream() bool {
+	return awaitPostCaptureStream.Load()
+}
+
+// ClearAwaitPostCaptureStream marks post-camera wait done.
+func ClearAwaitPostCaptureStream() {
+	awaitPostCaptureStream.Store(false)
+	postCaptureToolDone.Store(false)
+	postCaptureToolDoneNano.Store(0)
+}
+
+// AbandonPostCaptureAwait hard-clears post-camera wait so a hung analyze_photo
+// turn cannot leave speaker/busy/PCM state open and drain RAM into fault countdown.
+func AbandonPostCaptureAwait(reason string) {
+	streamSuspend.Store(false)
+	awaitPostCaptureStream.Store(false)
+	postCaptureToolDone.Store(false)
+	postCaptureToolDoneNano.Store(0)
+	postCaptureResumeUnixNano.Store(0)
+	ClearCancelFlags()
+	CleanupPlaybackFiles()
+	_ = os.Remove(BusyPath)
+	_ = os.Remove("/run/xiaozhi-busy")
+	SetPlaying(false)
+	log.Println("[Xiaozhi] analyze_photo: abandoned post-camera await —", reason)
+}
+
+// PostCaptureAwaitTimedOut reports hanging forever waiting for analysis audio.
+func PostCaptureAwaitTimedOut(d time.Duration) bool {
+	if !awaitPostCaptureStream.Load() {
+		return false
+	}
+	ns := postCaptureToolDoneNano.Load()
+	if ns == 0 {
+		ns = postCaptureResumeUnixNano.Load()
+	}
+	if ns == 0 {
+		return false
+	}
+	return time.Since(time.Unix(0, ns)) > d
+}
+
+// StreamAppendSuspended is true while camera capture holds the speaker.
+func StreamAppendSuspended() bool {
+	return streamSuspend.Load()
+}
+
 // StreamAppend appends decoded 16kHz s16le PCM and maintains a sliding tmpfs window.
 func StreamAppend(pcm []byte) (fileSize int64, err error) {
 	if len(pcm) == 0 {
+		return PCMFileSize(), nil
+	}
+	if streamSuspend.Load() {
+		// Drop late intro/frames during camera — avoids fighting ALSA.
 		return PCMFileSize(), nil
 	}
 
@@ -155,8 +314,24 @@ func StreamAppend(pcm []byte) (fileSize int64, err error) {
 
 	punchPlayedPCM(sz)
 
-	if sz > pcmHardCapBytes {
-		log.Printf("[Xiaozhi][TTS] PCM hard cap %d bytes — aborting long stream", pcmHardCapBytes)
+	streamMu.Lock()
+	punched := pcmPunchedTo
+	punchFail := pcmPunchFailed
+	streamMu.Unlock()
+
+	live := sz - punched
+	if live < 0 {
+		live = sz
+	}
+	if punchFail {
+		if sz > pcmHardCapPunchFailBytes {
+			log.Printf("[Xiaozhi][TTS] PCM hard cap %d bytes (punch unsupported, size=%d) — aborting long stream",
+				pcmHardCapPunchFailBytes, sz)
+			return sz, ErrPCMHardCap
+		}
+	} else if live > pcmHardCapBytes {
+		log.Printf("[Xiaozhi][TTS] PCM live-window hard cap %d (live=%d size=%d punched=%d) — aborting",
+			pcmHardCapBytes, live, sz, punched)
 		return sz, ErrPCMHardCap
 	}
 	return sz, nil
@@ -172,8 +347,9 @@ func estimatedPlayheadLocked() int64 {
 	if streamStartAt.IsZero() {
 		return 0
 	}
-	// Speaker usually starts ~0.4–1.5s after first bytes (getout / prime).
-	elapsed := time.Since(streamStartAt) - 600*time.Millisecond
+	// Speaker starts after getout settle (~0.45–1.5s) + ~0.55s speech buffer.
+	// Too-small lag makes punch-hole zero unread PCM → silent TTS + Wwise starve.
+	elapsed := time.Since(streamStartAt) - 2000*time.Millisecond
 	if elapsed < 0 {
 		return 0
 	}
@@ -229,7 +405,7 @@ func punchPlayedPCM(fileSize int64) {
 	from := pcmPunchedTo
 	streamMu.Unlock()
 
-	if punchTo-from < 64*1024 {
+	if punchTo-from < 48*1024 {
 		return // batch punches
 	}
 	if punchTo > fileSize {

@@ -59,3 +59,20 @@ func GetGrammerList(lang string) string {
 	grammer = "[" + grammer + "]"
 	return grammer
 }
+
+// GetBlackjackGrammarList is a tiny grammar for hit/stand/yes/no only — saves
+// recognizer FST RAM vs the full cloudless intent list while the ~68MB model
+// is loaded during blackjack on 426MB Vector.
+func GetBlackjackGrammarList() string {
+	words := []string{
+		"hit", "stand", "yes", "no", "play", "again", "blackjack",
+		"deal", "stop", "quit", "done", "never", "mind", "ok", "okay",
+	}
+	parts := make([]string, 0, len(words))
+	for _, w := range words {
+		if model == nil || model.FindWord(w) != -1 {
+			parts = append(parts, `"`+w+`"`)
+		}
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
+}

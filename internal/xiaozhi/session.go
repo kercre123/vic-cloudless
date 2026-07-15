@@ -163,20 +163,61 @@ func resetIdleTimerLocked() {
 	if idle < 20*time.Second {
 		idle = 30 * time.Second
 	}
-	sess.idleTimer = time.AfterFunc(idle, func() {
-		sess.mu.Lock()
-		defer sess.mu.Unlock()
-		// Only close if no turn is mid-flight and nothing is playing.
-		if sess.turnCancel != nil || sess.playing {
-			resetIdleTimerLocked()
-			return
+	// ESP32-style: after idle, always tear down WSS. Previously we only
+	// rescheduled when busy/playing/turnCancel stuck — that kept the socket
+	// open forever and fed RAM into yellow fault countdown.
+	sess.idleTimer = time.AfterFunc(idle, onSessionIdleTimeout)
+}
+
+// onSessionIdleTimeout closes the persistent WSS after SessionIdleSec with no
+// new listen. If playback/busy/turn flags were left dirty by analyze_photo, clear
+// them then close — do not keep rescheduling (that never closed like ESP32).
+func onSessionIdleTimeout() {
+	sess.mu.Lock()
+	if sess.client == nil {
+		sess.idleTimer = nil
+		sess.mu.Unlock()
+		return
+	}
+	stuckTurn := sess.turnCancel != nil
+	stuckPlaying := sess.playing
+	var cancelTurn context.CancelFunc
+	if sess.turnCancel != nil {
+		cancelTurn = sess.turnCancel
+		sess.turnCancel = nil
+	}
+	sess.playing = false
+	sess.ttsPending = false
+	sess.idleTimer = nil
+	sess.mu.Unlock()
+
+	busyLeft := false
+	if _, err := os.Stat(BusyPath); err == nil {
+		busyLeft = true
+	}
+	if _, err := os.Stat("/run/xiaozhi-busy"); err == nil {
+		busyLeft = true
+	}
+
+	if stuckTurn || stuckPlaying || busyLeft {
+		log.Printf("[Xiaozhi] idle force-close — clearing stuck state (turn=%v playing=%v busy=%v)",
+			stuckTurn, stuckPlaying, busyLeft)
+		if cancelTurn != nil {
+			cancelTurn()
 		}
-		if _, err := os.Stat(BusyPath); err == nil {
-			resetIdleTimerLocked()
-			return
-		}
-		closeSessionLocked("idle")
-	})
+		CleanupPlaybackFiles()
+		_ = os.Remove(BusyPath)
+		_ = os.Remove("/run/xiaozhi-busy")
+		ClearCancelFlags()
+		AbandonPostCaptureAwait("session_idle_force")
+		SetPlaying(false)
+	} else if cancelTurn != nil {
+		cancelTurn()
+	}
+
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	closeSessionLocked("idle")
 }
 
 // BindTurn registers the active listen/TTS round cancel (does not own the WSS).
@@ -403,12 +444,20 @@ func WaitPlaybackIdle(pcmBytes int, audioStartedAt time.Time, maxWait time.Durat
 			loggedEarly = true
 		}
 		// Anim posted but never Completed → busy stuck; open mic after PCM duration + grace.
+		// Also cancel ExternalAudio: after camera/TTS underrun, busy file can linger while
+		// Wwise is starved — next turn then has silent/scratchy speakers.
 		if !busyGone && timeOk && !time.Now().Before(stuckBusyDeadline) {
 			if !loggedStuck {
 				log.Println("[Xiaozhi] busy stuck after PCM drain — forcing clear for relisten")
 				loggedStuck = true
 			}
+			if err := RequestCancelPlayback(); err != nil {
+				log.Println("[Xiaozhi] cancel after busy-stuck:", err)
+			}
+			CleanupPlaybackFiles()
+			ClearCancelFlags()
 			SetPlaying(false)
+			time.Sleep(200 * time.Millisecond)
 			return false
 		}
 		time.Sleep(40 * time.Millisecond)
@@ -534,6 +583,30 @@ func BargeIn(reason string) bool {
 func ClearCancelFlags() {
 	_ = os.Remove(CancelFlagPath)
 	_ = os.Remove("/run/xiaozhi-cancel")
+}
+
+// ActiveClient returns the live Xiaozhi WSS client, or nil.
+func ActiveClient() *Client {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if sess.client != nil && sess.client.Alive() {
+		return sess.client
+	}
+	return nil
+}
+
+// AbortServerSpeaking asks the cloud TTS to stop (same session). Used before
+// analyze_photo capture so leftover intro Opus cannot steal the post-camera turn.
+func AbortServerSpeaking(reason string) {
+	c := ActiveClient()
+	if c == nil {
+		return
+	}
+	if err := c.SendAbortSpeaking(reason); err != nil {
+		log.Println("[Xiaozhi] abort speaking:", err)
+	} else {
+		log.Println("[Xiaozhi] abort speaking:", reason)
+	}
 }
 
 // RequestCancelPlayback asks anim to stop ExternalAudio now.

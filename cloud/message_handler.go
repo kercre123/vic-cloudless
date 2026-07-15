@@ -2666,6 +2666,14 @@ func (service *rpcService) EnableMirrorMode(ctx context.Context, request *extint
 func CaptureJPEGBytes(ctx context.Context, highRes bool) ([]byte, error) {
 	_ = ctx
 	svc := &rpcService{}
+	// Always force camera stream off afterwards — leftover ImageChunk buffering
+	// after analyze_photo has been starving MemAvailable into yellow fault while "idle".
+	defer func() {
+		_, _ = svc.EnableImageStreaming(nil, &extint.EnableImageStreamingRequest{
+			Enable:               false,
+			EnableHighResolution: false,
+		})
+	}()
 	resp, err := svc.CaptureSingleImage(nil, &extint.CaptureSingleImageRequest{
 		EnableHighResolution: highRes,
 	})
@@ -2696,7 +2704,9 @@ func (service *rpcService) CaptureSingleImage(ctx context.Context, request *exti
 		EnableHighResolution: false,
 	})
 
-	f, cameraFeedChannel := engineProtoManager.CreateChannel(&extint.GatewayWrapper_ImageChunk{}, 1024)
+	// 32 is enough for one reassembled JPEG; 1024 ImageChunks ballooned RAM
+	// and contributed to yellow fault countdown after analyze_photo.
+	f, cameraFeedChannel := engineProtoManager.CreateChannel(&extint.GatewayWrapper_ImageChunk{}, 32)
 	defer f()
 
 	cache := CameraFeedCache{

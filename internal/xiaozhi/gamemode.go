@@ -1,6 +1,11 @@
 package xiaozhi
 
 import (
+	"os"
+	"runtime"
+	"runtime/debug"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -82,16 +87,59 @@ func PrepareBlackjackSTT(reason string) {
 	gameMu.Unlock()
 
 	DisarmRelistenPending()
-	// Tear down Xiaozhi completely before the ~68MB Vosk model hits RAM.
+	// Tear down Xiaozhi + drop leftover PCM before the ~68MB Vosk model hits RAM.
 	CloseSession()
-	if err := vtr.EnsureVosk(); err != nil {
-		log.Println("[Game] PrepareBlackjackSTT EnsureVosk failed:", err)
+	CleanupPlaybackFiles()
+	runtime.GC()
+	debug.FreeOSMemory()
+	// Let ExternalAudio / Wwise finish draining after long music/TTS.
+	time.Sleep(800 * time.Millisecond)
+	runtime.GC()
+	debug.FreeOSMemory()
+
+	avail := memAvailableKB()
+	log.Printf("[Game] PrepareBlackjackSTT MemAvailable=%d kB before Vosk (%s)", avail, reason)
+	if avail > 0 && avail < 90000 {
+		// Too tight for Vosk+anim+engine — drop buffers again and wait a bit.
+		log.Println("[Game] low RAM before Vosk — delaying load")
+		time.Sleep(1500 * time.Millisecond)
+		runtime.GC()
+		debug.FreeOSMemory()
+		avail = memAvailableKB()
+		log.Printf("[Game] PrepareBlackjackSTT MemAvailable=%d kB after wait", avail)
+	}
+
+	if err := vtr.EnsureVoskBlackjack(); err != nil {
+		log.Println("[Game] PrepareBlackjackSTT EnsureVoskBlackjack failed:", err)
 		return
 	}
 	gameMu.Lock()
 	blackjackSTTReady = true
 	gameMu.Unlock()
-	log.Println("[Game] Vosk ready — Xiaozhi closed; reason:", reason)
+	log.Printf("[Game] Vosk ready — Xiaozhi closed; MemAvailable=%d kB; reason: %s",
+		memAvailableKB(), reason)
+}
+
+func memAvailableKB() int64 {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return -1
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "MemAvailable:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			return -1
+		}
+		kb, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			return -1
+		}
+		return kb
+	}
+	return -1
 }
 
 // ExitBlackjackGameMode unloads Vosk (best-effort) and allows Xiaozhi on the next wake.

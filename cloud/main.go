@@ -234,6 +234,7 @@ func xzcloudinit() xiaozhi.Config {
 	}
 	// Wire camera capture for MCP self.camera.analyze_photo (Xiaozhi vision Explain).
 	xiaozhi.SetJPEGCapture(CaptureJPEGBytes)
+	xiaozhi.SetPhotoShutter(PlayPhotoShutter)
 	if cfg.DeviceID != "" && cfg.ClientID != "" {
 		go func() {
 			if err := xiaozhi.OtaCheck(&cfg); err != nil {

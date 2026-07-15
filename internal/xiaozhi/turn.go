@@ -273,9 +273,11 @@ sttWait:
 	streamStarted := false
 	streamEnded := false
 	headPadDone := false // Plan A: one head silence pad per stream before real PCM
-	// Long stories: allow up to 10 minutes of TTS audio; cut with abort so "continue" works.
-	const ttsAbsoluteMax = 10 * time.Minute
+	// Mitigate pack: soft-cap ~250s of continuous server TTS/music to protect
+	// ALSA/Wwise on 426MB Vector (was 10m — multi-minute streams crashed anim).
+	const ttsAbsoluteMax = 250 * time.Second
 	const ttsIdleGap = 45 * time.Second
+	const ttsSoftCapPCMBytes = 250 * 16000 * 2 // ~250s of 16kHz s16le
 	ttsAbsoluteDeadline := time.After(ttsAbsoluteMax)
 	idleTicker := time.NewTicker(1 * time.Second)
 	defer idleTicker.Stop()
@@ -300,8 +302,8 @@ sttWait:
 			streamEnded = true
 		}
 	}
+
 	defer func() {
-		// On abort, BargeIn cancels anim; still clear producer end so a stuck stream does not linger.
 		if turnCtx.Err() == context.Canceled {
 			return
 		}
@@ -358,9 +360,37 @@ sttWait:
 					resetStaleTTSBlip()
 					continue
 				}
+				// Intro stop during capture, or late stop after Soft StreamEnd while
+				// waiting for analysis — ignore briefly. After tool reply, a stop with
+				// no analysis stream means the server finished; do not hang 25s.
+				if IgnorePrematureTTSStop() {
+					if PostCaptureToolDone() && !streamStarted &&
+						PostCaptureAwaitTimedOut(2*time.Second) {
+						rx, dropped := client.AudioRXStats()
+						log.Printf("[Xiaozhi][TTS] post-camera stop with no analysis — abort (rx=%d dropped=%d)",
+							rx, dropped)
+						abortServerTTS("post_camera_no_analysis")
+						AbandonPostCaptureAwait("tts_stop_no_analysis")
+						ttsStopped = true
+						endStream()
+						continue
+					}
+					log.Println("[Xiaozhi][TTS] ignoring premature stop during/after camera")
+					if AwaitPostCaptureStream() || StreamAppendSuspended() {
+						lastAudioAt = time.Time{}
+						sawTTSStart = false
+						audioFrames = 0
+						pcmBytesStreamed = 0
+						firstAudioAt = time.Time{}
+						streamStarted = false
+						streamEnded = false
+						SetPlaying(false)
+					}
+					continue
+				}
 				ttsStopped = true
 				pcmMs := pcmBytesStreamed / 32
-				if !doStream {
+				if !doStream && len(allPCM) > pcmBytesStreamed {
 					pcmMs = len(allPCM) / 32
 				}
 				if audioFrames > 0 {
@@ -394,10 +424,6 @@ sttWait:
 			ttsStarted = true
 			audioFrames++
 			audioOpusBytes += len(opusFrame)
-			if firstAudioAt.IsZero() {
-				firstAudioAt = time.Now()
-			}
-			lastAudioAt = time.Now()
 
 			// Decode Opus→16k PCM. Robot anim redirects StartStreamOpus to the
 			// growing PCM file — writing Opus FIFOs produced silent speakers.
@@ -411,14 +437,34 @@ sttWait:
 			}
 			pcm16k := Downsample24kTo16k(pcm24k)
 			if !doStream {
+				lastAudioAt = time.Now()
 				allPCM = append(allPCM, pcm16k...)
 				continue
 			}
 
+			// Drop Opus while camera holds the speaker, and while waiting for the
+			// tool reply (leftover intro). Analysis almost never sends a new TTS start.
+			if StreamAppendSuspended() || DropPostCaptureOpus() {
+				if streamStarted {
+					streamStarted = false
+					streamEnded = false
+					SetPlaying(false)
+					headPadDone = false
+				}
+				continue
+			}
+			lastAudioAt = time.Now()
+
 			if !streamStarted {
-				// Relisten is armed once in runXiaozhiTurn after WaitPlaybackIdle —
-				// do NOT ArmRelistenAfterPlay here (anim FakeTrigger + cloud TriggerRelisten
-				// opened the mic twice back-to-back).
+				if AwaitPostCaptureStream() || PostCaptureToolDone() {
+					if newDec, err := NewDecoder(); err == nil {
+						dec = newDec
+						decErr = nil
+					}
+					pcmBytesStreamed = 0
+					ttsSentences = nil
+					log.Println("[Xiaozhi][TTS] streaming analysis after camera")
+				}
 				primeBytes, err := ArmStreamWithSilencePrime()
 				if err != nil {
 					log.Println("[Xiaozhi][TTS] stream start:", err)
@@ -428,13 +474,23 @@ sttWait:
 				}
 				pcmBytesStreamed += primeBytes
 				streamStarted = true
+				firstAudioAt = time.Now()
 				SetPlaying(true)
+				ClearAwaitPostCaptureStream()
 				releaseListenUI("stream_armed")
 				log.Printf("[Xiaozhi][TTS] playing (prime=%dB) +%v",
 					primeBytes, firstAudioAt.Sub(ttsPhaseStart).Round(time.Millisecond))
 			}
 
 			if streamStarted {
+				if pcmBytesStreamed > ttsSoftCapPCMBytes {
+					log.Printf("[Xiaozhi][TTS] soft-cap ~%ds PCM — aborting long stream for stability",
+						ttsSoftCapPCMBytes/32000)
+					abortServerTTS("soft_cap")
+					_ = StreamEnd()
+					ttsStopped = true
+					continue
+				}
 				fsz, err := StreamAppend(pcm16k)
 				if err != nil {
 					if err == ErrPCMHardCap {
@@ -460,24 +516,6 @@ sttWait:
 			}
 
 			allPCM = append(allPCM, pcm16k...)
-
-		case mcpMsg := <-client.MCPCh():
-			// Should be rare: MCP pump owns mcpCh. If a message slips through
-			// (pump not yet started), answer it here so handshake/tools never stall.
-			if mcp := SessionMCP(); mcp != nil {
-				if intent, err := mcp.ProcessMessage(mcpMsg); intent != "" && err == nil {
-					act := mcp.TakePendingAction()
-					if act.Intent == "" {
-						act.Intent = intent
-					}
-					pendingRobotIntent = act.Intent
-					pendingRobotParams = act.Params
-					NoteMCPIntentQueued(pendingRobotIntent, pendingRobotParams)
-					log.Println("[Xiaozhi] MCP action queued during TTS (fallback path):", act.Intent)
-				}
-			} else {
-				log.Println("[Xiaozhi] MCP message during TTS but no session handler")
-			}
 
 		case <-client.GoodbyeCh():
 			ttsStopped = true
@@ -507,12 +545,28 @@ sttWait:
 				}
 				continue
 			}
+			// After tool reply: no analysis audio within ~6s → hard abort (was 25s hang → RAM/fault).
+			if PostCaptureToolDone() && PostCaptureAwaitTimedOut(6*time.Second) && !streamStarted {
+				rx, dropped := client.AudioRXStats()
+				log.Printf("[Xiaozhi][TTS] post-camera await timeout — hard abort (rx=%d dropped=%d audioFrames=%d)",
+					rx, dropped, audioFrames)
+				abortServerTTS("post_camera_await_timeout")
+				AbandonPostCaptureAwait("await_timeout_6s")
+				ttsStopped = true
+				endStream()
+				continue
+			}
+			// Hold normal idle gap open only briefly while waiting for analysis Opus.
+			if AwaitPostCaptureStream() {
+				continue
+			}
 			// No audio yet: allow LLM thinking time up to absolute max (handled below).
 			if lastAudioAt.IsZero() {
 				continue
 			}
 			if time.Since(lastAudioAt) > ttsIdleGap {
 				log.Printf("[Xiaozhi] TTS idle %v since last audio — ending stream (partial ok)", ttsIdleGap)
+				ClearAwaitPostCaptureStream()
 				abortServerTTS("idle_timeout")
 				ttsStopped = true
 				endStream()

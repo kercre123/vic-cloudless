@@ -19,7 +19,9 @@ import (
 	"math/rand"
 	"path"
 	"reflect"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/digital-dream-labs/vector-cloud/internal/ipc"
@@ -62,11 +64,34 @@ type IpcManager struct {
 // vic-gateway acts as the client in all of its domain socket connections since
 // it is the part of the system closest to the outside world.
 func (manager *IpcManager) Connect(path string, name string) {
+	clientpath := path + "_" + name
+	var lastLog time.Time
+	failStreak := 0
 	for {
 		conn, err := ipc.NewUnixgramClient(path, name)
 		if err != nil {
-			log.Printf("Couldn't create sockets for %s & %s_%s - retrying: %s\n", path, path, name, err.Error())
-			time.Sleep(5 * time.Second)
+			failStreak++
+			_ = syscall.Unlink(clientpath)
+			msg := err.Error()
+			// Stale unixgram endpoints (common after switchboard restart races)
+			// return EPERM forever until the server recreates the socket file.
+			eperm := strings.Contains(msg, "operation not permitted")
+			now := time.Now()
+			if lastLog.IsZero() || now.Sub(lastLog) >= 60*time.Second {
+				if eperm {
+					log.Printf("Couldn't create sockets for %s & %s - retrying (EPERM; stale switchboard socket? restart vic-switchboard): %s\n",
+						path, clientpath, msg)
+				} else {
+					log.Printf("Couldn't create sockets for %s & %s - retrying: %s\n", path, clientpath, msg)
+				}
+				lastLog = now
+			}
+			sleep := 5 * time.Second
+			if eperm {
+				sleep = 15 * time.Second
+			}
+			time.Sleep(sleep)
+			_ = failStreak
 		} else {
 			manager.conn = conn
 			return

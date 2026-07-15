@@ -3,12 +3,14 @@ package xiaozhi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/digital-dream-labs/vector-cloud/internal/log"
@@ -18,20 +20,60 @@ import (
 // Injected from cloud/main so xiaozhi avoids importing engineProtoManager.
 type JPEGCaptureFunc func(ctx context.Context, highRes bool) ([]byte, error)
 
+// PhotoShutterFunc plays the take-photo shutter animation (WirePod anim_photo_shutter_01).
+type PhotoShutterFunc func(ctx context.Context) error
+
 var (
 	jpegCaptureMu sync.RWMutex
 	jpegCapture   JPEGCaptureFunc
 
+	photoShutterMu sync.RWMutex
+	photoShutter   PhotoShutterFunc
+
 	visionMu    sync.RWMutex
 	visionURL   string
 	visionToken string
+
+	// Single-flight analyze_photo: server often calls the tool twice.
+	analyzeMu     sync.Mutex
+	analyzeFlight *analyzeFlightState
+
+	// Last successful/attempted analyze wall time — delay continuous relisten so anim RAM recovers.
+	lastAnalyzeUnixNano atomic.Int64
 )
+
+type analyzeFlightState struct {
+	done   chan struct{}
+	result string
+	err    error
+}
 
 // SetJPEGCapture registers the robot camera capture hook (call once from cloud main).
 func SetJPEGCapture(fn JPEGCaptureFunc) {
 	jpegCaptureMu.Lock()
 	jpegCapture = fn
 	jpegCaptureMu.Unlock()
+}
+
+// SetPhotoShutter registers the shutter-animation hook (WirePod-style UX).
+func SetPhotoShutter(fn PhotoShutterFunc) {
+	photoShutterMu.Lock()
+	photoShutter = fn
+	photoShutterMu.Unlock()
+}
+
+func playPhotoShutter(ctx context.Context) {
+	photoShutterMu.RLock()
+	fn := photoShutter
+	photoShutterMu.RUnlock()
+	if fn == nil {
+		return
+	}
+	if err := fn(ctx); err != nil {
+		log.Println("[Xiaozhi] analyze_photo shutter:", err)
+		return
+	}
+	log.Println("[Xiaozhi] analyze_photo: shutter")
 }
 
 // SetVisionExplain stores Xiaozhi vision Explain endpoint from MCP initialize.
@@ -137,23 +179,152 @@ func ExplainPhoto(ctx context.Context, question string, jpeg []byte) (string, er
 }
 
 // AnalyzeScene captures one frame and uploads it for Xiaozhi vision analysis.
+// WirePod order: soft-end intro → capture → shutter flash → Explain → MCP reply.
+// Must finish tools/call quickly or the server sends notifications/cancelled and
+// never streams analysis TTS.
 func AnalyzeScene(ctx context.Context, question string) (string, error) {
-	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	jpeg, err := captureJPEG(cctx, true)
+	analyzeMu.Lock()
+	if f := analyzeFlight; f != nil {
+		analyzeMu.Unlock()
+		log.Println("[Xiaozhi] analyze_photo waiting — join in-flight capture")
+		<-f.done
+		return f.result, f.err
+	}
+	f := &analyzeFlightState{done: make(chan struct{})}
+	analyzeFlight = f
+	analyzeMu.Unlock()
+
+	defer func() {
+		analyzeMu.Lock()
+		analyzeFlight = nil
+		close(f.done)
+		analyzeMu.Unlock()
+	}()
+
+	SuspendPlaybackForCapture()
+
+	// Flash on-face while speaker is free (after soft StreamEnd) — then grab JPEG.
+	// After CaptureSingleImage the face is often still in stream teardown (invisible flash).
+	playPhotoShutter(ctx)
+
+	jpeg, err := captureJPEGForAnalysis(ctx)
+	ResumePlaybackAfterCapture()
+	NoteAnalyzeAttempt()
 	if err != nil {
-		return "", fmt.Errorf("capture: %w", err)
+		f.err = fmt.Errorf("capture: %w", err)
+		return "", f.err
 	}
 	log.Printf("[Xiaozhi] analyze_photo captured %d bytes JPEG", len(jpeg))
 
-	ectx, cancel2 := context.WithTimeout(ctx, 45*time.Second)
+	ectx, cancel2 := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel2()
-	result, err := ExplainPhoto(ectx, question, jpeg)
+	raw, err := ExplainPhoto(ectx, question, jpeg)
 	if err != nil {
+		f.err = err
 		return "", err
 	}
-	log.Printf("[Xiaozhi] analyze_photo Explain OK (%d chars)", len(result))
-	return result, nil
+	analysis, err := parseExplainBody(raw)
+	if err != nil {
+		f.err = err
+		log.Printf("[Xiaozhi] analyze_photo Explain body: %s", truncate(raw, 200))
+		return "", err
+	}
+	log.Printf("[Xiaozhi] analyze_photo Explain OK (%d chars): %s", len(analysis), truncate(analysis, 120))
+	// Plain description for the LLM (not raw JSON with filename).
+	f.result = analysis
+	return analysis, nil
+}
+
+// NoteAnalyzeAttempt records that analyze_photo ran (success or fail) for post-turn cooldown.
+func NoteAnalyzeAttempt() {
+	lastAnalyzeUnixNano.Store(time.Now().UnixNano())
+}
+
+// AnalyzeCooldownRemaining is how long continuous mode should wait before FakeTrigger
+// after a heavy analyze_photo (camera + TTS spikes anim RAM; immediate relisten → yellow fault).
+func AnalyzeCooldownRemaining() time.Duration {
+	ns := lastAnalyzeUnixNano.Load()
+	if ns == 0 {
+		return 0
+	}
+	elapsed := time.Since(time.Unix(0, ns))
+	const cool = 4 * time.Second
+	if elapsed >= cool {
+		return 0
+	}
+	return cool - elapsed
+}
+
+const minAnalysisJPEGBytes = 4000
+
+func captureJPEGForAnalysis(ctx context.Context) ([]byte, error) {
+	// One shot, high-res like WirePod — retries ate the server tools/call budget.
+	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	jpeg, err := captureJPEG(cctx, true)
+	cancel()
+	if err != nil {
+		return nil, err
+	}
+	if len(jpeg) == 0 {
+		return nil, fmt.Errorf("empty camera frame")
+	}
+	if len(jpeg) < minAnalysisJPEGBytes {
+		log.Printf("[Xiaozhi] analyze_photo small frame (%d B) — still sending", len(jpeg))
+	}
+	return jpeg, nil
+}
+
+// parseExplainBody turns Xiaozhi vision HTTP JSON into plain text for MCP/TTS.
+// ESP32 returns {"success":true,"result":"..."} or {"success":false,"message":"..."}.
+func parseExplainBody(body string) (string, error) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return "", fmt.Errorf("empty explain response")
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(body), &m); err != nil {
+		return body, nil
+	}
+	if success, ok := m["success"].(bool); ok {
+		if !success {
+			msg := explainErrorMessage(m)
+			if msg == "" {
+				msg = "vision explain failed"
+			}
+			return "", fmt.Errorf("%s", msg)
+		}
+		if text := explainTextField(m); text != "" {
+			return text, nil
+		}
+	}
+	if text := explainTextField(m); text != "" {
+		return text, nil
+	}
+	return body, nil
+}
+
+func explainTextField(m map[string]interface{}) string {
+	for _, key := range []string{"result", "text", "description", "answer", "content", "message"} {
+		if v, ok := m[key].(string); ok {
+			v = strings.TrimSpace(v)
+			if v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+func explainErrorMessage(m map[string]interface{}) string {
+	for _, key := range []string{"message", "error", "msg"} {
+		if v, ok := m[key].(string); ok {
+			v = strings.TrimSpace(v)
+			if v != "" {
+				return v
+			}
+		}
+	}
+	return ""
 }
 
 func truncate(s string, n int) string {

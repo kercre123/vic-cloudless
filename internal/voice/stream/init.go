@@ -231,10 +231,16 @@ func (strm *Streamer) runXiaozhiTurn() {
 		// Drop anim pending-relisten so OnAudioCompleted does not FakeTrigger early
 		// while we still wait for PCM drain — that caused mic open → mic open again.
 		xiaozhi.DisarmRelistenPending()
-		_ = xiaozhi.WaitPlaybackIdle(result.PCMBytes, result.AudioStartedAt, 120*time.Second)
+		idleOK := xiaozhi.WaitPlaybackIdle(result.PCMBytes, result.AudioStartedAt, 120*time.Second)
 		// Free tmpfs PCM as soon as speaker is done (long stories otherwise linger).
 		xiaozhi.CleanupPlaybackFiles()
 		xiaozhi.SetPlaying(false)
+		if !idleOK {
+			// Speaker path left dirty (common after analyze_photo + underrun).
+			_ = xiaozhi.RequestCancelPlayback()
+			xiaozhi.ClearCancelFlags()
+			time.Sleep(250 * time.Millisecond)
+		}
 	}
 
 	if result.RobotIntent != "" {
@@ -276,6 +282,12 @@ func (strm *Streamer) runXiaozhiTurn() {
 
 	if result.StreamedAudio {
 		if xiaozhi.ContinuousMode() && !xiaozhi.InBlackjackGameMode() {
+			if cool := xiaozhi.AnalyzeCooldownRemaining(); cool > 0 {
+				log.Printf("[Xiaozhi] post-analyze cooldown %v before relisten (RAM recover)", cool.Round(time.Millisecond))
+				xiaozhi.CleanupPlaybackFiles()
+				xiaozhi.SetPlaying(false)
+				time.Sleep(cool)
+			}
 			time.Sleep(350 * time.Millisecond)
 			if err := xiaozhi.TriggerRelisten(); err != nil {
 				log.Println("[Xiaozhi] relisten trigger:", err)
