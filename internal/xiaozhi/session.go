@@ -456,6 +456,10 @@ func WaitPlaybackIdle(pcmBytes int, audioStartedAt time.Time, maxWait time.Durat
 		} else if _, err := os.Stat("/run/xiaozhi-busy"); err == nil {
 			busyGone = false
 		}
+		// Plan B: cloud owns busy; also wait for tinyplay to finish draining.
+		if UseAlsaPlayback() && AlsaActive() {
+			busyGone = false
+		}
 		timeOk := !time.Now().Before(earliest)
 		if busyGone && timeOk {
 			sess.mu.Lock()
@@ -642,7 +646,9 @@ func AbortServerSpeaking(reason string) {
 }
 
 // RequestCancelPlayback asks anim to stop ExternalAudio now.
+// Plan B (ALSA): also kills tinyplay immediately.
 func RequestCancelPlayback() error {
+	AlsaCancel()
 	return os.WriteFile(CancelFlagPath, []byte("1"), 0644)
 }
 

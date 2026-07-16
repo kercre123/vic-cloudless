@@ -67,6 +67,7 @@ func clearStreamFlags() {
 
 // CleanupPlaybackFiles removes stream/oneshot artefacts after a turn.
 func CleanupPlaybackFiles() {
+	AlsaCancel()
 	streamMu.Lock()
 	streamStartAt = time.Time{}
 	pcmPunchedTo = 0
@@ -124,7 +125,14 @@ func raiseStreamFlag() error {
 }
 
 // StreamStart truncates the PCM file and asks anim to begin ExternalAudio streaming.
+// With XIAOZHI_ALSA (Plan B default), starts tinyplay on MultiMedia2 instead.
 func StreamStart() error {
+	if UseAlsaPlayback() {
+		clearStreamFlags()
+		ClearCancelFlags()
+		DisarmRelistenPending()
+		return alsaStart()
+	}
 	if err := streamPrepareFile(); err != nil {
 		return err
 	}
@@ -279,7 +287,17 @@ func StreamAppendSuspended() bool {
 }
 
 // StreamAppend appends decoded 16kHz s16le PCM and maintains a sliding tmpfs window.
+// Plan B (ALSA): writes directly to tinyplay FIFO — ALSA provides backpressure.
 func StreamAppend(pcm []byte) (fileSize int64, err error) {
+	if UseAlsaPlayback() {
+		if len(pcm) == 0 {
+			return alsaBytesWritten(), nil
+		}
+		if streamSuspend.Load() {
+			return alsaBytesWritten(), nil
+		}
+		return alsaWrite(pcm)
+	}
 	if len(pcm) == 0 {
 		return PCMFileSize(), nil
 	}
@@ -443,7 +461,11 @@ func PCMFileSize() int64 {
 }
 
 // StreamEnd syncs the PCM file and sets the stream-end flag.
+// Plan B (ALSA): closes the FIFO and waits for tinyplay to drain.
 func StreamEnd() error {
+	if UseAlsaPlayback() {
+		return alsaEnd()
+	}
 	if f, err := os.OpenFile(PCMFilePath, os.O_RDWR, 0644); err == nil {
 		_ = f.Sync()
 		_ = f.Close()
@@ -483,7 +505,34 @@ func TriggerRelisten() error {
 
 // ArmStreamWithSilencePrime prepares PCM with silence prime + head pad, THEN raises
 // the stream flag so ExternalAudio does not open on an empty file.
+// Plan B (ALSA): starts tinyplay and primes the FIFO — no ExternalAudio flags.
 func ArmStreamWithSilencePrime() (primeBytes int, err error) {
+	if UseAlsaPlayback() {
+		clearStreamFlags()
+		ClearCancelFlags()
+		DisarmRelistenPending()
+		if err := alsaStart(); err != nil {
+			return 0, err
+		}
+		silence := make([]byte, SilencePrimeChunkBytes)
+		for i := 0; i < SilencePrimeChunks; i++ {
+			if _, err := alsaWrite(silence); err != nil {
+				AlsaCancel()
+				return primeBytes, fmt.Errorf("alsa silence prime %d: %w", i+1, err)
+			}
+			primeBytes += SilencePrimeChunkBytes
+		}
+		if HeadPadSilenceBytes > 0 {
+			pad := make([]byte, HeadPadSilenceBytes)
+			if _, err := alsaWrite(pad); err != nil {
+				AlsaCancel()
+				return primeBytes, fmt.Errorf("alsa head pad: %w", err)
+			}
+			primeBytes += HeadPadSilenceBytes
+		}
+		log.Printf("[Xiaozhi][ALSA] armed (prime=%dB) — ExternalAudio skipped", primeBytes)
+		return primeBytes, nil
+	}
 	if err := streamPrepareFile(); err != nil {
 		return 0, err
 	}

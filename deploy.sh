@@ -19,8 +19,9 @@ scp -i ssh_root_key build/lib* root@$1:/anki/lib/
 scp -i ssh_root_key vic-cloud.service root@$1:/lib/systemd/system/vic-cloud.service
 scp -i ssh_root_key extra/xiaozhi-play-bridge.sh root@$1:/anki/bin/xiaozhi-play-bridge.sh
 scp -i ssh_root_key extra/xiaozhi-play-bridge.service root@$1:/lib/systemd/system/xiaozhi-play-bridge.service
+scp -i ssh_root_key extra/xiaozhi-reclaim-anim.sh root@$1:/anki/bin/xiaozhi-reclaim-anim.sh
 scp -i ssh_root_key extra/cloud.sudoers root@$1:/etc/sudoers.d/cloud
 scp -i ssh_root_key extra/setfreq root@$1:/usr/sbin/
 ssh -i ssh_root_key root@$1 "sed -i \"s/Nice=\-2/Nice=3/g\" /usr/lib/systemd/system/vic-anim.service"
 rsync -e 'ssh -i ssh_root_key' -avr build/en-US root@$1:/anki/data/assets/cozmo_resources/cloudless/
-ssh -i ssh_root_key root@$1 "chmod +x /anki/bin/xiaozhi-play-bridge.sh /usr/sbin/setfreq && systemctl daemon-reload && systemctl enable xiaozhi-play-bridge.service && sudo -k && systemctl start anki-robot.target && systemctl restart xiaozhi-play-bridge.service"
+ssh -i ssh_root_key root@$1 "chmod +x /anki/bin/xiaozhi-play-bridge.sh /anki/bin/xiaozhi-reclaim-anim.sh /usr/sbin/setfreq && systemctl daemon-reload && systemctl enable xiaozhi-play-bridge.service && sudo -k && systemctl start anki-robot.target && systemctl restart xiaozhi-play-bridge.service"
