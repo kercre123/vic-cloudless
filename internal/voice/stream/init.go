@@ -47,12 +47,13 @@ func (strm *Streamer) init(streamSize int) {
 					strm.runLocalVoskTurn()
 					return
 				}
-				// ShouldUseLocalVosk may have just exited game on Normal wake.
+				// ShouldUseLocalVosk may have just exited (Normal wake or OOM refuse).
 				if xiaozhi.InBlackjackGameMode() {
 					log.Println("[Game] still in game — forcing Vosk")
 					strm.runLocalVoskTurn()
 					return
 				}
+				log.Println("[Game] left blackjack — Xiaozhi path")
 			} else if xiaozhi.ShouldUseLocalVosk(strm.opts.mode) {
 				log.Println("[Game] local Vosk path; mode:", strm.opts.mode)
 				strm.runLocalVoskTurn()
@@ -89,7 +90,19 @@ func (strm *Streamer) deliverDeferredSelfControlIfAny() bool {
 }
 
 func (strm *Streamer) runLocalVoskTurn() {
-	if err := vtr.EnsureVosk(); err != nil {
+	// Blackjack uses the tiny grammar already prepared; never EnsureVosk() full model
+	// (that reloads ~90MB after an OOM Exit Unload and fights Xiaozhi).
+	if xiaozhi.InBlackjackGameMode() {
+		if !xiaozhi.BlackjackSTTReady() {
+			if !xiaozhi.PrepareBlackjackSTT("vosk turn") {
+				log.Println("[Game] Vosk not ready — abort blackjack listen")
+				strm.respOnce.Do(func() {
+					strm.receiver.OnError(cloud.ErrorType_Server, fmt.Errorf("blackjack STT unavailable"))
+				})
+				return
+			}
+		}
+	} else if err := vtr.EnsureVosk(); err != nil {
 		log.Println("[Vosk] EnsureVosk:", err)
 		strm.respOnce.Do(func() {
 			strm.receiver.OnError(cloud.ErrorType_Server, err)
@@ -214,9 +227,19 @@ func (strm *Streamer) runXiaozhiTurn() {
 		}
 		// STT timeout / empty after silence: end the turn. Do not FakeTrigger again —
 		// that caused open→timeout→open spam when the user stayed quiet.
+		// Exception: just left blackjack — reopen mic once so chat can start.
 		if strings.Contains(errText, "timeout waiting for STT") ||
 			strings.Contains(errText, "empty STT") {
-			log.Println("[Xiaozhi] silence after listen — mic closed until Hey Vector / button")
+			if xiaozhi.ConsumeReopenMicAfterBlackjack() {
+				time.Sleep(400 * time.Millisecond)
+				if rerr := xiaozhi.TriggerRelisten(); rerr != nil {
+					log.Println("[Game] reopen mic after EXIT silence:", rerr)
+				} else {
+					log.Println("[Game] Xiaozhi mic reopened after blackjack EXIT — speak now")
+				}
+			} else {
+				log.Println("[Xiaozhi] silence after listen — mic closed until Hey Vector / button")
+			}
 		}
 		strm.respOnce.Do(func() {
 			strm.receiver.OnError(cloud.ErrorType_Server, err)
@@ -308,6 +331,7 @@ func (strm *Streamer) runXiaozhiTurn() {
 			if err := xiaozhi.TriggerRelisten(); err != nil {
 				log.Println("[Xiaozhi] relisten trigger:", err)
 			} else {
+				xiaozhi.ClearReopenMicAfterBlackjack()
 				log.Println("[Xiaozhi][Mic] relisten after playback")
 			}
 		}
@@ -354,6 +378,8 @@ func (strm *Streamer) runXiaozhiTurn() {
 				} else if xiaozhi.ContinuousMode() && !xiaozhi.InBlackjackGameMode() {
 					if err := xiaozhi.TriggerRelisten(); err != nil {
 						log.Println("[Xiaozhi] relisten after one-shot:", err)
+					} else {
+						xiaozhi.ClearReopenMicAfterBlackjack()
 					}
 				}
 			}
@@ -386,6 +412,8 @@ func (strm *Streamer) runXiaozhiTurn() {
 			}
 			if err := xiaozhi.TriggerRelisten(); err != nil {
 				log.Println("[Xiaozhi] relisten trigger:", err)
+			} else {
+				xiaozhi.ClearReopenMicAfterBlackjack()
 			}
 		}()
 	}
