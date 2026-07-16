@@ -40,23 +40,20 @@ func (strm *Streamer) init(streamSize int) {
 		}
 
 		if xiaozhi.Enabled() {
-			// Hard gate: while blackjack gameMode is on, never open Xiaozhi.
-			if xiaozhi.InBlackjackGameMode() {
-				if xiaozhi.ShouldUseLocalVosk(strm.opts.mode) {
-					log.Println("[Game] local Vosk path; mode:", strm.opts.mode)
-					strm.runLocalVoskTurn()
-					return
-				}
-				// ShouldUseLocalVosk may have just exited (Normal wake or OOM refuse).
-				if xiaozhi.InBlackjackGameMode() {
-					log.Println("[Game] still in game — forcing Vosk")
-					strm.runLocalVoskTurn()
-					return
-				}
-				log.Println("[Game] left blackjack — Xiaozhi path")
-			} else if xiaozhi.ShouldUseLocalVosk(strm.opts.mode) {
+			// Blackjack streams use local Vosk only. If Vosk cannot run (OOM refuse,
+			// idle cooldown, prepare fail), drop the stream — never fall through to
+			// Xiaozhi or chat runs in parallel with the engine blackjack UI.
+			if xiaozhi.ShouldUseLocalVosk(strm.opts.mode) {
 				log.Println("[Game] local Vosk path; mode:", strm.opts.mode)
 				strm.runLocalVoskTurn()
+				return
+			}
+			if strm.opts.mode == cloud.StreamType_Blackjack {
+				xiaozhi.DisarmRelistenPending()
+				log.Println("[Game] drop Blackjack stream — Vosk unavailable; no Xiaozhi parallel")
+				strm.respOnce.Do(func() {
+					strm.receiver.OnError(cloud.ErrorType_Server, fmt.Errorf("blackjack STT unavailable"))
+				})
 				return
 			}
 			log.Println("[Xiaozhi] enabled — entering runXiaozhiTurn")
@@ -93,6 +90,7 @@ func (strm *Streamer) runLocalVoskTurn() {
 	// Blackjack uses the tiny grammar already prepared; never EnsureVosk() full model
 	// (that reloads ~90MB after an OOM Exit Unload and fights Xiaozhi).
 	if xiaozhi.InBlackjackGameMode() {
+		xiaozhi.NoteBlackjackVoskActivity("vosk listen start")
 		if !xiaozhi.BlackjackSTTReady() {
 			if !xiaozhi.PrepareBlackjackSTT("vosk turn") {
 				log.Println("[Game] Vosk not ready — abort blackjack listen")
@@ -128,6 +126,9 @@ func (strm *Streamer) runLocalVoskTurn() {
 		if text != "" {
 			intent, iParam, _ := vtr.ProcessTextAll(text, vtr.IntentList)
 			log.Println("[Vosk] matched:", intent, "text:", text)
+			if xiaozhi.InBlackjackGameMode() {
+				xiaozhi.NoteBlackjackVoskActivity("vosk matched " + intent)
+			}
 			sendIntentGraphResponse(&chippergrpc2.IntentGraphResponse{
 				ResponseType: chippergrpc2.IntentGraphMode_INTENT,
 				IsFinal:      true,

@@ -1,9 +1,7 @@
 package xiaozhi
 
 import (
-	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -27,8 +25,14 @@ const (
 	// this after Xiaozhi teardown + anim soft-restart (else LMK → fault 923).
 	voskMinAvailKB int64 = 150 * 1024
 
-	// After REFUSE, do not immediately re-ENTER from engine Blackjack streams.
+	// After REFUSE / idle unload, do not immediately re-ENTER from engine Blackjack streams.
 	voskRefuseCooldown = 90 * time.Second
+
+	// Blackjack-only: no Vosk mic/STT activity for this long → unload + leave game mode.
+	voskIdleTimeout = 30 * time.Second
+
+	// After idle unload, block engine StreamType_Blackjack re-enter briefly.
+	voskIdleReenterCooldown = 60 * time.Second
 )
 
 var (
@@ -37,8 +41,11 @@ var (
 	blackjackGameMode bool
 	blackjackEntered  time.Time
 	lastBlackjackMic  time.Time
+	lastVoskActivity  time.Time // last blackjack Vosk use (mic / STT / prepare)
 	blackjackSTTReady bool
 	voskRefusedUntil  time.Time
+
+	blackjackIdleWatchOnce sync.Once
 
 	// After EXIT, reopen Xiaozhi mic once (FakeTrigger) so the user can talk
 	// without a second button press — especially when the exit wake itself
@@ -77,14 +84,71 @@ func markBlackjackGameMode(reason string) {
 		blackjackEntered = time.Now()
 		blackjackSTTReady = false
 	}
-	lastBlackjackMic = time.Now()
+	now := time.Now()
+	lastBlackjackMic = now
+	lastVoskActivity = now
 	gameMu.Unlock()
 
 	// Stop continuous Xiaozhi relisten so Vosk and Xiaozhi never fight for the mic.
 	DisarmRelistenPending()
+	ensureBlackjackIdleWatcher()
 
 	if !already {
 		log.Println("[Game] blackjack ENTER (Vosk deferred until after TTS); reason:", reason)
+		log.Printf("[Game] Vosk idle watchdog armed (%v no activity → unload)", voskIdleTimeout)
+	}
+}
+
+// NoteBlackjackVoskActivity resets the blackjack-only idle timer (mic / STT / prepare).
+func NoteBlackjackVoskActivity(why string) {
+	gameMu.Lock()
+	if !blackjackGameMode {
+		gameMu.Unlock()
+		return
+	}
+	now := time.Now()
+	lastVoskActivity = now
+	lastBlackjackMic = now
+	gameMu.Unlock()
+	ensureBlackjackIdleWatcher()
+}
+
+func ensureBlackjackIdleWatcher() {
+	blackjackIdleWatchOnce.Do(func() {
+		go blackjackIdleWatcherLoop()
+	})
+}
+
+// blackjackIdleWatcherLoop unloads Vosk after voskIdleTimeout with no activity.
+// Only runs meaningful checks while blackjack game mode + Vosk ready.
+func blackjackIdleWatcherLoop() {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		gameMu.Lock()
+		inGame := blackjackGameMode
+		ready := blackjackSTTReady
+		last := lastVoskActivity
+		if last.IsZero() {
+			last = lastBlackjackMic
+		}
+		gameMu.Unlock()
+
+		if !inGame || !ready || last.IsZero() {
+			continue
+		}
+		idle := time.Since(last)
+		if idle < voskIdleTimeout {
+			continue
+		}
+
+		log.Printf("[Game] Vosk idle %v (threshold %v) — no blackjack activity; unloading Vosk",
+			idle.Round(time.Second), voskIdleTimeout)
+		gameMu.Lock()
+		voskRefusedUntil = time.Now().Add(voskIdleReenterCooldown)
+		gameMu.Unlock()
+		ExitBlackjackGameMode("vosk_idle_30s")
+		log.Println("[Game] EXIT after Vosk idle 30s — Xiaozhi on next manual wake (no auto-mic); Blackjack re-enter blocked ~60s")
 	}
 }
 
@@ -131,16 +195,7 @@ func PrepareBlackjackSTT(reason string) bool {
 	}
 
 	avail := memAvailableKB()
-	log.Printf("[Game] PrepareBlackjackSTT MemAvailable=%d kB before anim free (%s)", avail, reason)
-	if avail > 0 && avail < voskMinAvailKB {
-		if err := softRestartAnimForVosk(); err != nil {
-			log.Println("[Game] anim soft-restart for Vosk failed:", err)
-		}
-		runtime.GC()
-		debug.FreeOSMemory()
-		avail = memAvailableKB()
-		log.Printf("[Game] PrepareBlackjackSTT MemAvailable=%d kB after anim free", avail)
-	}
+	log.Printf("[Game] PrepareBlackjackSTT MemAvailable=%d kB (%s)", avail, reason)
 
 	if avail > 0 && avail < voskMinAvailKB {
 		log.Printf("[Game] REFUSE Vosk — MemAvailable=%d kB < %d kB (would LMK). Exit blackjack.",
@@ -179,72 +234,13 @@ func PrepareBlackjackSTT(reason string) bool {
 	}
 	blackjackSTTReady = true
 	voskRefusedUntil = time.Time{}
+	lastVoskActivity = time.Now()
+	lastBlackjackMic = lastVoskActivity
 	gameMu.Unlock()
 	log.Printf("[Game] Vosk ready — Xiaozhi closed; MemAvailable=%d kB; reason: %s",
 		after, reason)
+	ensureBlackjackIdleWatcher()
 	return true
-}
-
-// softRestartAnimForVosk drops Wwise RSS (~50→~50MB cold) so Vosk can fit.
-// Anim-only restart is OK here: conversation is over, engine will reattach.
-func softRestartAnimForVosk() error {
-	log.Println("[Game] soft-restart vic-anim to free RAM for Vosk")
-	cmd := exec.Command("/usr/bin/sudo", "-n", "/bin/systemctl", "restart", "vic-anim.service")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%v — %s", err, strings.TrimSpace(string(out)))
-	}
-	deadline := time.Now().Add(12 * time.Second)
-	for time.Now().Before(deadline) {
-		if animRSSKB() > 0 {
-			time.Sleep(1500 * time.Millisecond)
-			return nil
-		}
-		time.Sleep(400 * time.Millisecond)
-	}
-	return fmt.Errorf("vic-anim did not come back")
-}
-
-func animRSSKB() int64 {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return -1
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if name[0] < '0' || name[0] > '9' {
-			continue
-		}
-		comm, err := os.ReadFile("/proc/" + name + "/comm")
-		if err != nil {
-			continue
-		}
-		if strings.TrimSpace(string(comm)) != "vic-anim" {
-			continue
-		}
-		status, err := os.ReadFile("/proc/" + name + "/status")
-		if err != nil {
-			return -1
-		}
-		for _, line := range strings.Split(string(status), "\n") {
-			if !strings.HasPrefix(line, "VmRSS:") {
-				continue
-			}
-			fields := strings.Fields(line)
-			if len(fields) < 2 {
-				return -1
-			}
-			kb, err := strconv.ParseInt(fields[1], 10, 64)
-			if err != nil {
-				return -1
-			}
-			return kb
-		}
-	}
-	return -1
 }
 
 func memAvailableKB() int64 {
@@ -270,7 +266,7 @@ func memAvailableKB() int64 {
 }
 
 // ExitBlackjackGameMode unloads Vosk (best-effort) and allows Xiaozhi on the next wake.
-// Also arms a Xiaozhi mic reopen so the user can speak without pressing the button again.
+// Auto-mic FakeTrigger only for Normal wake EXIT; idle/OOM leave mic closed until button/Hey Vector.
 func ExitBlackjackGameMode(reason string) {
 	gameMu.Lock()
 	if !blackjackGameMode {
@@ -281,16 +277,21 @@ func ExitBlackjackGameMode(reason string) {
 	blackjackSTTReady = false
 	blackjackEntered = time.Time{}
 	lastBlackjackMic = time.Time{}
+	lastVoskActivity = time.Time{}
 	gameMu.Unlock()
 
 	vtr.UnloadVosk()
 	DisarmRelistenPending()
 	log.Println("[Game] blackjack EXIT — Vosk unloaded; reason:", reason)
 
-	// OOM/load fail: engine may still spam Blackjack streams — arm Xiaozhi so user
-	// can chat, but only on intentional leave do we always want mic. Both OK.
-	reopenMicAfterBlackjack.Store(true)
-	go ensureXiaozhiMicAfterBlackjackExit()
+	// Idle / OOM / max-age: do not FakeTrigger — user wakes manually.
+	if strings.Contains(reason, "normal wake") {
+		reopenMicAfterBlackjack.Store(true)
+		go ensureXiaozhiMicAfterBlackjackExit()
+		return
+	}
+	reopenMicAfterBlackjack.Store(false)
+	log.Println("[Game] mic stays closed after EXIT — wait for Hey Vector / button")
 }
 
 // ClearReopenMicAfterBlackjack drops the post-EXIT mic arm (continuous path already reopened).
@@ -361,7 +362,7 @@ func ShouldUseLocalVosk(mode cloud.StreamType) bool {
 	if !inGame {
 		if mode == cloud.StreamType_Blackjack {
 			if refused {
-				log.Println("[Game] skip blackjack re-enter — recent Vosk OOM refuse")
+				log.Println("[Game] skip blackjack re-enter — cooldown after OOM/idle Vosk unload")
 				return false
 			}
 			markBlackjackGameMode("engine StreamType_Blackjack")
@@ -376,9 +377,7 @@ func ShouldUseLocalVosk(mode cloud.StreamType) bool {
 	}
 
 	if mode == cloud.StreamType_Blackjack {
-		gameMu.Lock()
-		lastBlackjackMic = time.Now()
-		gameMu.Unlock()
+		NoteBlackjackVoskActivity("StreamType_Blackjack")
 		// Must return Prepare result — false after OOM Exit must NOT runLocalVoskTurn.
 		return PrepareBlackjackSTT("blackjack mic")
 	}
