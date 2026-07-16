@@ -229,12 +229,14 @@ func signalHandler() {
 // xzcloudinit loads the Xiaozhi config and optionally runs a background OTA check.
 func xzcloudinit() xiaozhi.Config {
 	cfg := xiaozhi.LoadConfig()
+	// Always register camera hooks — Xiaozhi can be enabled later via :8080 /
+	// xiaozhi.json without restarting vic-cloud. If we only wire these when
+	// cfg.Enabled at boot, analyze_photo fails with "JPEG capture not registered".
+	xiaozhi.SetJPEGCapture(CaptureJPEGBytes)
+	xiaozhi.SetPhotoShutter(PlayPhotoShutter)
 	if !cfg.Enabled {
 		return cfg
 	}
-	// Wire camera capture for MCP self.camera.analyze_photo (Xiaozhi vision Explain).
-	xiaozhi.SetJPEGCapture(CaptureJPEGBytes)
-	xiaozhi.SetPhotoShutter(PlayPhotoShutter)
 	if cfg.DeviceID != "" && cfg.ClientID != "" {
 		go func() {
 			if err := xiaozhi.OtaCheck(&cfg); err != nil {
