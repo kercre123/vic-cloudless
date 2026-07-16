@@ -203,10 +203,9 @@ func AnalyzeScene(ctx context.Context, question string) (string, error) {
 
 	SuspendPlaybackForCapture()
 
-	// Flash on-face while speaker is free (after soft StreamEnd) — then grab JPEG.
-	// After CaptureSingleImage the face is often still in stream teardown (invisible flash).
-	playPhotoShutter(ctx)
-
+	// Capture FIRST — Xiaozhi cancels tools/call around ~8–10s. Shutter before
+	// capture burned ~0.8s and tipped us over the budget (notifications/cancelled
+	// → LLM says "timeout" even when Explain later succeeds).
 	jpeg, err := captureJPEGForAnalysis(ctx)
 	ResumePlaybackAfterCapture()
 	NoteAnalyzeAttempt()
@@ -215,6 +214,9 @@ func AnalyzeScene(ctx context.Context, question string) (string, error) {
 		return "", f.err
 	}
 	log.Printf("[Xiaozhi] analyze_photo captured %d bytes JPEG", len(jpeg))
+
+	// Shutter in parallel with Explain — UX click without blocking the MCP reply.
+	go playPhotoShutter(context.Background())
 
 	ectx, cancel2 := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel2()
@@ -233,6 +235,13 @@ func AnalyzeScene(ctx context.Context, question string) (string, error) {
 	// Plain description for the LLM (not raw JSON with filename).
 	f.result = analysis
 	return analysis, nil
+}
+
+// AnalyzeInFlight is true while AnalyzeScene holds the single-flight lock work.
+func AnalyzeInFlight() bool {
+	analyzeMu.Lock()
+	defer analyzeMu.Unlock()
+	return analyzeFlight != nil
 }
 
 // NoteAnalyzeAttempt records that analyze_photo ran (success or fail) for post-turn cooldown.
@@ -258,9 +267,9 @@ func AnalyzeCooldownRemaining() time.Duration {
 const minAnalysisJPEGBytes = 4000
 
 func captureJPEGForAnalysis(ctx context.Context) ([]byte, error) {
-	// One shot, high-res like WirePod — retries ate the server tools/call budget.
-	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	jpeg, err := captureJPEG(cctx, true)
+	// Low-res is enough for Explain and usually returns a frame sooner (tools/call budget).
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	jpeg, err := captureJPEG(cctx, false)
 	cancel()
 	if err != nil {
 		return nil, err

@@ -156,18 +156,18 @@ func SuspendPlaybackForCapture() {
 	if playbackBusyFile() {
 		log.Println("[Xiaozhi] analyze_photo: soft StreamEnd before camera")
 		_ = StreamEnd()
-		time.Sleep(250 * time.Millisecond)
+		time.Sleep(120 * time.Millisecond)
 	} else {
-		// Brief arm if intro TTS just starting.
-		armDeadline := time.Now().Add(800 * time.Millisecond)
+		// Brief arm if intro TTS just starting — keep short for tools/call budget.
+		armDeadline := time.Now().Add(400 * time.Millisecond)
 		for time.Now().Before(armDeadline) {
 			if playbackBusyFile() {
 				log.Println("[Xiaozhi] analyze_photo: soft StreamEnd before camera")
 				_ = StreamEnd()
-				time.Sleep(250 * time.Millisecond)
+				time.Sleep(120 * time.Millisecond)
 				break
 			}
-			time.Sleep(40 * time.Millisecond)
+			time.Sleep(30 * time.Millisecond)
 		}
 	}
 	CleanupPlaybackFiles()
@@ -175,7 +175,7 @@ func SuspendPlaybackForCapture() {
 	_ = os.Remove(BusyPath)
 	_ = os.Remove("/run/xiaozhi-busy")
 	SetPlaying(false)
-	time.Sleep(120 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 }
 
 // ResumePlaybackAfterCapture frees the speaker; Opus stays dropped until the
@@ -189,7 +189,7 @@ func ResumePlaybackAfterCapture() {
 	postCaptureToolDoneNano.Store(0)
 	postCaptureResumeUnixNano.Store(time.Now().UnixNano())
 	log.Println("[Xiaozhi] analyze_photo: resume — stream analysis after tool reply")
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(80 * time.Millisecond)
 }
 
 // PreferOneshotAfterCapture always false — ESP32-style stream only (oneshot

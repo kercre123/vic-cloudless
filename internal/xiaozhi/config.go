@@ -36,7 +36,7 @@ func defaultConfig() Config {
 		AutoApplyOTAWebsocket: true,
 		ConversationMode:      "continuous",
 		IdleTimeoutSec:        20,
-		SessionIdleSec:        60,
+		SessionIdleSec:        30,
 		TTSMode:               "xiaozhi",
 	}
 }

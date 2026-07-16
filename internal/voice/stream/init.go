@@ -281,6 +281,15 @@ func (strm *Streamer) runXiaozhiTurn() {
 	}
 
 	if result.StreamedAudio {
+		// Server bye closes WSS (log: closed WSS session … turn_end). That is the
+		// flag: if session is gone, do not continuous-relisten / reopen mic.
+		if result.EndConversation || !xiaozhi.SessionAlive() {
+			xiaozhi.DisarmRelistenPending()
+			log.Println("[Xiaozhi] WSS closed — mic closed until Hey Vector / button (no auto-relisten)")
+			xiaozhi.ClearPendingMCPIntent("wss closed")
+			log.Println("[Xiaozhi][TTS] turn done; session:", xiaozhi.ActiveSessionID())
+			return
+		}
 		if xiaozhi.ContinuousMode() && !xiaozhi.InBlackjackGameMode() {
 			if cool := xiaozhi.AnalyzeCooldownRemaining(); cool > 0 {
 				log.Printf("[Xiaozhi] post-analyze cooldown %v before relisten (RAM recover)", cool.Round(time.Millisecond))
@@ -289,6 +298,13 @@ func (strm *Streamer) runXiaozhiTurn() {
 				time.Sleep(cool)
 			}
 			time.Sleep(350 * time.Millisecond)
+			// Re-check: idle/goodbye may have closed WSS while we waited for speaker.
+			if !xiaozhi.SessionAlive() {
+				xiaozhi.DisarmRelistenPending()
+				log.Println("[Xiaozhi] WSS closed during playback wait — skip relisten")
+				xiaozhi.ClearPendingMCPIntent("wss closed after playback")
+				return
+			}
 			if err := xiaozhi.TriggerRelisten(); err != nil {
 				log.Println("[Xiaozhi] relisten trigger:", err)
 			} else {
@@ -332,7 +348,10 @@ func (strm *Streamer) runXiaozhiTurn() {
 				log.Printf("[Xiaozhi] ExternalAudio play flag set (+%v)",
 					time.Since(playStart).Round(time.Millisecond))
 				_ = xiaozhi.WaitPlaybackIdle(len(allPCM), playStart, 120*time.Second)
-				if xiaozhi.ContinuousMode() && !xiaozhi.InBlackjackGameMode() {
+				if result.EndConversation || !xiaozhi.SessionAlive() {
+					xiaozhi.DisarmRelistenPending()
+					log.Println("[Xiaozhi] WSS closed after one-shot — no relisten")
+				} else if xiaozhi.ContinuousMode() && !xiaozhi.InBlackjackGameMode() {
 					if err := xiaozhi.TriggerRelisten(); err != nil {
 						log.Println("[Xiaozhi] relisten after one-shot:", err)
 					}
@@ -357,10 +376,14 @@ func (strm *Streamer) runXiaozhiTurn() {
 		})
 	})
 
-	if xiaozhi.ContinuousMode() && !xiaozhi.InBlackjackGameMode() {
+	if xiaozhi.ContinuousMode() && !xiaozhi.InBlackjackGameMode() &&
+		!result.EndConversation && xiaozhi.SessionAlive() {
 		go func() {
 			// Rough wait for Acapela to finish speaking before relisten.
 			time.Sleep(4 * time.Second)
+			if !xiaozhi.SessionAlive() {
+				return
+			}
 			if err := xiaozhi.TriggerRelisten(); err != nil {
 				log.Println("[Xiaozhi] relisten trigger:", err)
 			}

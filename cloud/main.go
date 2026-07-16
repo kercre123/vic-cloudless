@@ -21,6 +21,7 @@ import (
 	"github.com/digital-dream-labs/vector-cloud/internal/jdocs"
 	"github.com/digital-dream-labs/vector-cloud/internal/log"
 	"github.com/digital-dream-labs/vector-cloud/internal/logcollector"
+	"github.com/digital-dream-labs/vector-cloud/internal/memprobe"
 	"github.com/digital-dream-labs/vector-cloud/internal/robot"
 	"github.com/digital-dream-labs/vector-cloud/internal/token"
 	"github.com/digital-dream-labs/vector-cloud/internal/voice"
@@ -98,6 +99,9 @@ func main() {
 	}
 
 	log.Println("Starting up")
+
+	// TEMP_PERF_RAM_PROBE — 10s total + per-process RSS; remove memprobe after profiling.
+	memprobe.Start()
 
 	// Load Xiaozhi config early so all subsystems can check Enabled().
 	xiaozhiCfg := xzcloudinit()

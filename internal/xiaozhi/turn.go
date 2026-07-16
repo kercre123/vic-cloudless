@@ -28,6 +28,9 @@ type TurnResult struct {
 	PCMBytes int
 	// AudioStartedAt is when the first TTS PCM frame was streamed (zero if none).
 	AudioStartedAt time.Time
+	// EndConversation is true after server goodbye / WSS drop on bye — caller must
+	// NOT continuous-relisten (would reopen mic + WebSocket).
+	EndConversation bool
 }
 
 // RunTurn executes a complete Xiaozhi voice turn:
@@ -50,6 +53,7 @@ func RunTurn(ctx context.Context, audioStream <-chan []byte, cfg Config, afterST
 
 	keepSession := ContinuousMode()
 	forceClose := false
+	endConversation := false
 
 	// Reuse persistent WSS in continuous mode (ESP32-style same session_id).
 	client, err := EnsureConnected(turnCtx, cfg)
@@ -62,6 +66,8 @@ func RunTurn(ctx context.Context, audioStream <-chan []byte, cfg Config, afterST
 		if turnCtx.Err() == context.Canceled {
 			// Never wipe PCM/flags on barge-in — BargeIn already stopped anim;
 			// CleanupPlaybackFiles races the next turn's StreamStart (silent TTS).
+			// MarkActivity is a no-op while the replacement turn is bound/playing,
+			// so we cannot re-arm the 30s idle timer under live music.
 			if keepSession {
 				MarkActivity()
 			}
@@ -364,6 +370,17 @@ sttWait:
 				// waiting for analysis — ignore briefly. After tool reply, a stop with
 				// no analysis stream means the server finished; do not hang 25s.
 				if IgnorePrematureTTSStop() {
+					// Only end when analysis stream was actually armed/playing.
+					// audioFrames>0 alone is wrong: intro Opus still increments the
+					// counter while DropPostCaptureOpus discards it — that made us
+					// "end normally" with no "streaming analysis after camera" (silent).
+					if PostCaptureToolDone() && streamStarted {
+						log.Printf("[Xiaozhi][TTS] analysis stop after %d frames — ending normally", audioFrames)
+						ClearAwaitPostCaptureStream()
+						ttsStopped = true
+						endStream()
+						continue
+					}
 					if PostCaptureToolDone() && !streamStarted &&
 						PostCaptureAwaitTimedOut(2*time.Second) {
 						rx, dropped := client.AudioRXStats()
@@ -376,13 +393,13 @@ sttWait:
 						continue
 					}
 					log.Println("[Xiaozhi][TTS] ignoring premature stop during/after camera")
+					// Clear intro frame counts so a later stop cannot look like analysis.
 					if AwaitPostCaptureStream() || StreamAppendSuspended() {
 						lastAudioAt = time.Time{}
 						sawTTSStart = false
 						audioFrames = 0
 						pcmBytesStreamed = 0
 						firstAudioAt = time.Time{}
-						streamStarted = false
 						streamEnded = false
 						SetPlaying(false)
 					}
@@ -422,8 +439,6 @@ sttWait:
 
 		case opusFrame := <-client.AudioCh():
 			ttsStarted = true
-			audioFrames++
-			audioOpusBytes += len(opusFrame)
 
 			// Decode Opus→16k PCM. Robot anim redirects StartStreamOpus to the
 			// growing PCM file — writing Opus FIFOs produced silent speakers.
@@ -437,13 +452,15 @@ sttWait:
 			}
 			pcm16k := Downsample24kTo16k(pcm24k)
 			if !doStream {
+				audioFrames++
+				audioOpusBytes += len(opusFrame)
 				lastAudioAt = time.Now()
 				allPCM = append(allPCM, pcm16k...)
 				continue
 			}
 
-			// Drop Opus while camera holds the speaker, and while waiting for the
-			// tool reply (leftover intro). Analysis almost never sends a new TTS start.
+			// Drop Opus while camera holds the speaker (streamSuspend).
+			// Do not bump audioFrames here — intro leftovers must not look like analysis.
 			if StreamAppendSuspended() || DropPostCaptureOpus() {
 				if streamStarted {
 					streamStarted = false
@@ -453,6 +470,8 @@ sttWait:
 				}
 				continue
 			}
+			audioFrames++
+			audioOpusBytes += len(opusFrame)
 			lastAudioAt = time.Now()
 
 			if !streamStarted {
@@ -520,13 +539,18 @@ sttWait:
 		case <-client.GoodbyeCh():
 			ttsStopped = true
 			forceClose = true
-			log.Println("[Xiaozhi] goodbye received")
+			endConversation = true
+			log.Println("[Xiaozhi] goodbye received — end conversation (no relisten)")
 			endStream()
 
 		case err := <-client.ErrCh():
 			log.Println("[Xiaozhi] server error during TTS:", err)
 			ttsStopped = true
 			forceClose = true
+			// Bye often arrives as close 1005 without a goodbye JSON frame.
+			if looksLikeGoodbye(sttText) {
+				endConversation = true
+			}
 			endStream()
 
 		case <-idleTicker.C:
@@ -545,13 +569,13 @@ sttWait:
 				}
 				continue
 			}
-			// After tool reply: no analysis audio within ~6s → hard abort (was 25s hang → RAM/fault).
-			if PostCaptureToolDone() && PostCaptureAwaitTimedOut(6*time.Second) && !streamStarted {
+			// After tool reply: no analysis audio within ~12s → hard abort (LLM+TTS need a beat).
+			if PostCaptureToolDone() && PostCaptureAwaitTimedOut(12*time.Second) && !streamStarted {
 				rx, dropped := client.AudioRXStats()
 				log.Printf("[Xiaozhi][TTS] post-camera await timeout — hard abort (rx=%d dropped=%d audioFrames=%d)",
 					rx, dropped, audioFrames)
 				abortServerTTS("post_camera_await_timeout")
-				AbandonPostCaptureAwait("await_timeout_6s")
+				AbandonPostCaptureAwait("await_timeout_12s")
 				ttsStopped = true
 				endStream()
 				continue
@@ -610,6 +634,11 @@ sttWait:
 		StreamedAudio:     streamStarted,
 		PCMBytes:          pcmBytesStreamed,
 		AudioStartedAt:    firstAudioAt,
+		EndConversation:   endConversation || looksLikeGoodbye(sttText),
+	}
+	if result.EndConversation {
+		forceClose = true
+		log.Println("[Xiaozhi] end conversation — WSS will close; no continuous relisten")
 	}
 	if !streamStarted && len(allPCM) > 0 {
 		result.PCMChunks = ChunkPCM(allPCM)
@@ -620,4 +649,27 @@ sttWait:
 	_ = ttsSentences
 	_ = headPadDone
 	return result, nil
+}
+
+// looksLikeGoodbye detects user farewell STT so we stop continuous relisten
+// even when the server only drops the socket (close 1005) without a goodbye frame.
+func looksLikeGoodbye(stt string) bool {
+	s := strings.ToLower(strings.TrimSpace(stt))
+	if s == "" {
+		return false
+	}
+	s = strings.TrimRight(s, ".!?,…")
+	s = strings.TrimSpace(s)
+	for _, k := range []string{
+		"bye bye", "goodbye", "good bye", "bye-bye",
+		"tạm biệt", "tam biet", "hẹn gặp lại", "hen gap lai",
+	} {
+		if strings.Contains(s, k) {
+			return true
+		}
+	}
+	if s == "bye" || strings.HasPrefix(s, "bye ") || strings.HasSuffix(s, " bye") {
+		return true
+	}
+	return false
 }

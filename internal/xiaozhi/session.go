@@ -142,9 +142,14 @@ func closeSessionLocked(reason string) {
 }
 
 // MarkActivity resets the session idle timer (call after a successful round).
+// Do NOT arm while a listen/TTS/music turn is active — a superseded barge-in
+// turn used to MarkActivity after the next BindTurn and kill long music at 30s.
 func MarkActivity() {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
+	if sess.turnCancel != nil || sess.playing {
+		return
+	}
 	resetIdleTimerLocked()
 }
 
@@ -163,15 +168,13 @@ func resetIdleTimerLocked() {
 	if idle < 20*time.Second {
 		idle = 30 * time.Second
 	}
-	// ESP32-style: after idle, always tear down WSS. Previously we only
-	// rescheduled when busy/playing/turnCancel stuck — that kept the socket
-	// open forever and fed RAM into yellow fault countdown.
+	// ESP32-style: after idle, tear down WSS. Timer must only run when no
+	// active turn/playback (see MarkActivity / onSessionIdleTimeout).
 	sess.idleTimer = time.AfterFunc(idle, onSessionIdleTimeout)
 }
 
 // onSessionIdleTimeout closes the persistent WSS after SessionIdleSec with no
-// new listen. If playback/busy/turn flags were left dirty by analyze_photo, clear
-// them then close — do not keep rescheduling (that never closed like ESP32).
+// new listen. Live TTS/music defers close; only force-clear when truly stuck.
 func onSessionIdleTimeout() {
 	sess.mu.Lock()
 	if sess.client == nil {
@@ -179,8 +182,26 @@ func onSessionIdleTimeout() {
 		sess.mu.Unlock()
 		return
 	}
-	stuckTurn := sess.turnCancel != nil
-	stuckPlaying := sess.playing
+
+	activeTurn := sess.turnCancel != nil
+	playing := sess.playing
+	playAge := time.Duration(0)
+	if playing && !sess.playingSince.IsZero() {
+		playAge = time.Since(sess.playingSince)
+	}
+	// Music / long TTS can exceed session_idle_sec — defer, don't abort mid-song.
+	// Cap at 15m so a wedged busy flag cannot hold WSS forever (RAM / fault path).
+	const maxPlayHold = 15 * time.Minute
+	if (activeTurn || playing) && playAge < maxPlayHold {
+		log.Printf("[Xiaozhi] idle deferred — active playback/turn (playing=%v turn=%v age=%v)",
+			playing, activeTurn, playAge.Round(time.Second))
+		resetIdleTimerLocked()
+		sess.mu.Unlock()
+		return
+	}
+
+	stuckTurn := activeTurn
+	stuckPlaying := playing
 	var cancelTurn context.CancelFunc
 	if sess.turnCancel != nil {
 		cancelTurn = sess.turnCancel
@@ -200,8 +221,8 @@ func onSessionIdleTimeout() {
 	}
 
 	if stuckTurn || stuckPlaying || busyLeft {
-		log.Printf("[Xiaozhi] idle force-close — clearing stuck state (turn=%v playing=%v busy=%v)",
-			stuckTurn, stuckPlaying, busyLeft)
+		log.Printf("[Xiaozhi] idle force-close — clearing stuck state (turn=%v playing=%v busy=%v age=%v)",
+			stuckTurn, stuckPlaying, busyLeft, playAge.Round(time.Second))
 		if cancelTurn != nil {
 			cancelTurn()
 		}
@@ -488,6 +509,13 @@ func ActiveSessionID() string {
 		return sess.client.SessionID()
 	}
 	return ""
+}
+
+// SessionAlive is true while the persistent Xiaozhi WSS is open.
+// After server bye / turn_end close, this is false — continuous mode must NOT
+// FakeTrigger (that would open mic and dial a new WebSocket).
+func SessionAlive() bool {
+	return ActiveSessionID() != ""
 }
 
 // BargeIn interrupts the current Xiaozhi turn/playback like xiaozhi-esp32 AbortSpeaking:

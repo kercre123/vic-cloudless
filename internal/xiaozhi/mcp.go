@@ -116,8 +116,12 @@ func (h *MCPHandler) ProcessMessage(msg ServerMessage) (string, error) {
 	case "notifications/initialized":
 		return "", nil
 	case "notifications/cancelled":
-		AbandonPostCaptureAwait("mcp_notifications_cancelled")
-		log.Println("[Xiaozhi] MCP notifications/cancelled — cleared post-camera wait")
+		if AnalyzeInFlight() {
+			log.Println("[Xiaozhi] MCP notifications/cancelled — analyze in flight, keep await")
+		} else {
+			AbandonPostCaptureAwait("mcp_notifications_cancelled")
+			log.Println("[Xiaozhi] MCP notifications/cancelled — cleared post-camera wait")
+		}
 		return "", nil
 	default:
 		_ = h.sendResult(msg.ID, map[string]interface{}{})

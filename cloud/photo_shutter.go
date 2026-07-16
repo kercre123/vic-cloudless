@@ -62,7 +62,7 @@ func PlayPhotoShutter(ctx context.Context) error {
 		} else {
 			log.Println("[Xiaozhi] analyze_photo shutter anim OK")
 		}
-	case <-time.After(700 * time.Millisecond):
+	case <-time.After(350 * time.Millisecond):
 		log.Println("[Xiaozhi] analyze_photo shutter anim playing (no wait on response)")
 	}
 

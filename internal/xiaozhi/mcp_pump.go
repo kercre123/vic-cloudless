@@ -36,8 +36,14 @@ func runMCPPump(ctx context.Context, c *Client, h *MCPHandler) {
 			}
 
 			if method == "notifications/cancelled" {
-				log.Println("[Xiaozhi] MCP cancelled by server — abandon post-camera await")
-				AbandonPostCaptureAwait("mcp_notifications_cancelled")
+				// If analyze_photo is still running, keep await — Explain often finishes
+				// right after cancel and we still need to stream analysis TTS.
+				if AnalyzeInFlight() {
+					log.Println("[Xiaozhi] MCP cancelled by server — analyze still in flight, keep await")
+				} else {
+					log.Println("[Xiaozhi] MCP cancelled by server — abandon post-camera await")
+					AbandonPostCaptureAwait("mcp_notifications_cancelled")
+				}
 				continue
 			}
 
