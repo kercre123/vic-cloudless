@@ -1,1 +1,1 @@
-cloud ALL = (root, root) NOPASSWD: /usr/sbin/setfreq *
+cloud ALL = (root, root) NOPASSWD: /usr/sbin/setfreq *, /bin/systemctl restart vic-anim.service, /bin/systemctl restart vic-anim

@@ -1,7 +1,9 @@
 package xiaozhi
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -20,6 +22,10 @@ const (
 
 	// Hard cap so a stuck gameMode cannot keep Vosk loaded forever.
 	blackjackGameModeMaxAge = 20 * time.Minute
+
+	// Vosk model costs ~90MB RSS. Refuse load unless MemAvailable stays above
+	// this after Xiaozhi teardown + anim soft-restart (else LMK → fault 923).
+	voskMinAvailKB int64 = 155 * 1024
 )
 
 var (
@@ -72,8 +78,9 @@ func markBlackjackGameMode(reason string) {
 	}
 }
 
-// PrepareBlackjackSTT closes Xiaozhi WSS first, then lazy-loads Vosk.
-// Never loads Vosk while a Xiaozhi session is still open.
+// PrepareBlackjackSTT closes Xiaozhi WSS first, frees anim RSS, then lazy-loads Vosk.
+// Never loads Vosk while a Xiaozhi session is still open. Aborts instead of LMK
+// if MemAvailable stays below voskMinAvailKB.
 func PrepareBlackjackSTT(reason string) {
 	gameMu.Lock()
 	if !blackjackGameMode {
@@ -87,37 +94,113 @@ func PrepareBlackjackSTT(reason string) {
 	gameMu.Unlock()
 
 	DisarmRelistenPending()
-	// Tear down Xiaozhi + drop leftover PCM before the ~68MB Vosk model hits RAM.
+	// Tear down Xiaozhi + drop leftover PCM before the ~90MB Vosk RSS hits.
 	CloseSession()
 	CleanupPlaybackFiles()
+	AlsaCancel()
 	runtime.GC()
 	debug.FreeOSMemory()
-	// Let ExternalAudio / Wwise finish draining after long music/TTS.
-	time.Sleep(800 * time.Millisecond)
-	runtime.GC()
-	debug.FreeOSMemory()
+	time.Sleep(400 * time.Millisecond)
 
 	avail := memAvailableKB()
-	log.Printf("[Game] PrepareBlackjackSTT MemAvailable=%d kB before Vosk (%s)", avail, reason)
-	if avail > 0 && avail < 90000 {
-		// Too tight for Vosk+anim+engine — drop buffers again and wait a bit.
-		log.Println("[Game] low RAM before Vosk — delaying load")
-		time.Sleep(1500 * time.Millisecond)
+	log.Printf("[Game] PrepareBlackjackSTT MemAvailable=%d kB before anim free (%s)", avail, reason)
+	if avail > 0 && avail < voskMinAvailKB {
+		if err := softRestartAnimForVosk(); err != nil {
+			log.Println("[Game] anim soft-restart for Vosk failed:", err)
+		}
 		runtime.GC()
 		debug.FreeOSMemory()
 		avail = memAvailableKB()
-		log.Printf("[Game] PrepareBlackjackSTT MemAvailable=%d kB after wait", avail)
+		log.Printf("[Game] PrepareBlackjackSTT MemAvailable=%d kB after anim free", avail)
+	}
+
+	if avail > 0 && avail < voskMinAvailKB {
+		log.Printf("[Game] REFUSE Vosk — MemAvailable=%d kB < %d kB (would LMK). Exit blackjack.",
+			avail, voskMinAvailKB)
+		ExitBlackjackGameMode("vosk_oom_guard")
+		return
 	}
 
 	if err := vtr.EnsureVoskBlackjack(); err != nil {
 		log.Println("[Game] PrepareBlackjackSTT EnsureVoskBlackjack failed:", err)
+		ExitBlackjackGameMode("vosk_load_failed")
+		return
+	}
+	after := memAvailableKB()
+	if after > 0 && after < 40*1024 {
+		// Loaded but machine is already critical — unload and bail.
+		log.Printf("[Game] Vosk loaded but MemAvailable=%d kB critical — unloading", after)
+		vtr.UnloadVosk()
+		ExitBlackjackGameMode("vosk_post_load_oom")
 		return
 	}
 	gameMu.Lock()
 	blackjackSTTReady = true
 	gameMu.Unlock()
 	log.Printf("[Game] Vosk ready — Xiaozhi closed; MemAvailable=%d kB; reason: %s",
-		memAvailableKB(), reason)
+		after, reason)
+}
+
+// softRestartAnimForVosk drops Wwise RSS (~50→~50MB cold) so Vosk can fit.
+// Anim-only restart is OK here: conversation is over, engine will reattach.
+func softRestartAnimForVosk() error {
+	log.Println("[Game] soft-restart vic-anim to free RAM for Vosk")
+	cmd := exec.Command("/usr/bin/sudo", "-n", "/bin/systemctl", "restart", "vic-anim.service")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v — %s", err, strings.TrimSpace(string(out)))
+	}
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) {
+		if animRSSKB() > 0 {
+			time.Sleep(1500 * time.Millisecond)
+			return nil
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+	return fmt.Errorf("vic-anim did not come back")
+}
+
+func animRSSKB() int64 {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return -1
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if name[0] < '0' || name[0] > '9' {
+			continue
+		}
+		comm, err := os.ReadFile("/proc/" + name + "/comm")
+		if err != nil {
+			continue
+		}
+		if strings.TrimSpace(string(comm)) != "vic-anim" {
+			continue
+		}
+		status, err := os.ReadFile("/proc/" + name + "/status")
+		if err != nil {
+			return -1
+		}
+		for _, line := range strings.Split(string(status), "\n") {
+			if !strings.HasPrefix(line, "VmRSS:") {
+				continue
+			}
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				return -1
+			}
+			kb, err := strconv.ParseInt(fields[1], 10, 64)
+			if err != nil {
+				return -1
+			}
+			return kb
+		}
+	}
+	return -1
 }
 
 func memAvailableKB() int64 {
