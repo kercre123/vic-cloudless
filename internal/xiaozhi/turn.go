@@ -547,10 +547,8 @@ sttWait:
 			log.Println("[Xiaozhi] server error during TTS:", err)
 			ttsStopped = true
 			forceClose = true
-			// Bye often arrives as close 1005 without a goodbye JSON frame.
-			if looksLikeGoodbye(sttText) {
-				endConversation = true
-			}
+			// Server drop alone is enough; EndConversation is set when SessionAlive
+			// is false after FinishTurn closes the WSS — no STT keyword matching.
 			endStream()
 
 		case <-idleTicker.C:
@@ -634,7 +632,7 @@ sttWait:
 		StreamedAudio:     streamStarted,
 		PCMBytes:          pcmBytesStreamed,
 		AudioStartedAt:    firstAudioAt,
-		EndConversation:   endConversation || looksLikeGoodbye(sttText),
+		EndConversation:   endConversation,
 	}
 	if result.EndConversation {
 		forceClose = true
@@ -649,27 +647,4 @@ sttWait:
 	_ = ttsSentences
 	_ = headPadDone
 	return result, nil
-}
-
-// looksLikeGoodbye detects user farewell STT so we stop continuous relisten
-// even when the server only drops the socket (close 1005) without a goodbye frame.
-func looksLikeGoodbye(stt string) bool {
-	s := strings.ToLower(strings.TrimSpace(stt))
-	if s == "" {
-		return false
-	}
-	s = strings.TrimRight(s, ".!?,…")
-	s = strings.TrimSpace(s)
-	for _, k := range []string{
-		"bye bye", "goodbye", "good bye", "bye-bye",
-		"tạm biệt", "tam biet", "hẹn gặp lại", "hen gap lai",
-	} {
-		if strings.Contains(s, k) {
-			return true
-		}
-	}
-	if s == "bye" || strings.HasPrefix(s, "bye ") || strings.HasSuffix(s, " bye") {
-		return true
-	}
-	return false
 }
