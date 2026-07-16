@@ -14,6 +14,12 @@ import (
 // Soft-restart vic-anim after Xiaozhi WSS ends so ExternalAudio/Wwise RSS
 // returns toward ~50MB. Controlled systemctl stop is SERVICE_RESULT=success
 // → no face fault 800 (unlike crash/OOM).
+//
+// Plan B (ALSA from vic-cloud): ExternalAudio is disabled in anim, so RSS no
+// longer balloons from Xiaozhi TTS — leave reclaim OFF to avoid full-stack
+// restarts on idle / WSS close. Set true only if rolling back to ExternalAudio.
+
+const animReclaimEnabled = false
 
 var (
 	reclaimMu       sync.Mutex
@@ -27,6 +33,9 @@ var (
 // RequestAnimMemoryReclaim schedules a soft vic-anim restart once playback is idle.
 // Call after goodbye / EndConversation, or via MaybeReclaimAnimIfBloated when idle.
 func RequestAnimMemoryReclaim(reason string) {
+	if !animReclaimEnabled {
+		return
+	}
 	go runAnimMemoryReclaim(reason)
 }
 
@@ -34,6 +43,9 @@ func RequestAnimMemoryReclaim(reason string) {
 // vic-anim RSS is still high. Avoids the immediate idle-reclaim NoCloud race
 // while still preventing fault-number freezes after long music.
 func MaybeReclaimAnimIfBloated(reason string) {
+	if !animReclaimEnabled {
+		return
+	}
 	if SessionAlive() {
 		return
 	}
@@ -59,6 +71,9 @@ func MaybeReclaimAnimIfBloated(reason string) {
 // ScheduleIdleAnimReclaim waits then MaybeReclaim — gives the user time to
 // Hey Vector again without NoCloud from an immediate anim restart.
 func ScheduleIdleAnimReclaim(delay time.Duration, reason string) {
+	if !animReclaimEnabled {
+		return
+	}
 	go func() {
 		time.Sleep(delay)
 		MaybeReclaimAnimIfBloated(reason)

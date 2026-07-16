@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/digital-dream-labs/vector-cloud/internal/log"
-	"github.com/digital-dream-labs/vector-cloud/internal/xiaozhi"
 )
 
 // TEMP_PERF_RAM_PROBE — delete this package + Start() call in cloud/main.go when done.
@@ -37,7 +36,6 @@ func run() {
 	boot := time.Now()
 	var first map[string]int64
 	tick := 0
-	bloatedIdleTicks := 0
 	log.Println("[MemProbe] TEMP 10s RAM sampler started (remove after perf pass)")
 	for {
 		tick++
@@ -81,18 +79,8 @@ func run() {
 			sys["MemTotal"], sys["MemFree"], sys["MemAvailable"], sys["AnonPages"], sys["Cached"],
 			strings.Join(parts, " "))
 
-		// Safety net: after long music, anim keeps growing while idle with WSS
-		// closed — reclaim before avail collapses into face fault numbers.
-		animKB := rss["vic-anim"]
-		if phase == "idle" && animKB >= 100*1024 && !xiaozhi.SessionAlive() {
-			bloatedIdleTicks++
-			if bloatedIdleTicks >= 3 { // ~30s of idle+bloated samples
-				xiaozhi.MaybeReclaimAnimIfBloated("memprobe_anim_bloated")
-				bloatedIdleTicks = 0
-			}
-		} else {
-			bloatedIdleTicks = 0
-		}
+		// Plan B ALSA: anim no longer balloons from Xiaozhi TTS — reclaim disabled
+		// in xiaozhi.MaybeReclaimAnimIfBloated (animReclaimEnabled=false).
 
 		time.Sleep(interval)
 	}
