@@ -450,17 +450,35 @@ func WaitPlaybackIdle(pcmBytes int, audioStartedAt time.Time, maxWait time.Durat
 	loggedEarly := false
 	loggedStuck := false
 	for time.Now().Before(deadline) {
+		timeOk := !time.Now().Before(earliest)
+
+		// Plan B: cloud owns busy + tinyplay. Do not wait for anim to clear the
+		// busy file (it never will) — that caused false "busy stuck" and mid-tail kills.
+		if UseAlsaPlayback() {
+			if !AlsaActive() && timeOk {
+				SetPlaying(false)
+				return true
+			}
+			if AlsaActive() && timeOk && !time.Now().Before(stuckBusyDeadline) {
+				if !loggedStuck {
+					log.Println("[Xiaozhi][ALSA] drain stuck after PCM floor — killing for relisten")
+					loggedStuck = true
+				}
+				AlsaCancel()
+				SetPlaying(false)
+				time.Sleep(100 * time.Millisecond)
+				return false
+			}
+			time.Sleep(40 * time.Millisecond)
+			continue
+		}
+
 		busyGone := true
 		if _, err := os.Stat(BusyPath); err == nil {
 			busyGone = false
 		} else if _, err := os.Stat("/run/xiaozhi-busy"); err == nil {
 			busyGone = false
 		}
-		// Plan B: cloud owns busy; also wait for tinyplay to finish draining.
-		if UseAlsaPlayback() && AlsaActive() {
-			busyGone = false
-		}
-		timeOk := !time.Now().Before(earliest)
 		if busyGone && timeOk {
 			sess.mu.Lock()
 			sess.playing = false

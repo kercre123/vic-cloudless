@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -20,21 +21,28 @@ import (
 // Format: 16 kHz mono s16le (matches Opus decode).
 //
 // Default ON. Set XIAOZHI_ALSA=0 to restore ExternalAudio.
+//
+// Writes go through a queue so the TTS select loop is not blocked by realtime
+// ALSA backpressure (that race let TTSStateStop close the FIFO while Opus was
+// still queued → speech cut mid-sentence).
 
 const (
-	alsaFIFOPath   = "/run/vic-cloud/xiaozhi_alsa.fifo"
-	alsaCard       = "0"
-	alsaDevice     = "1"
-	alsaRate       = "16000"
-	alsaChannels   = "1"
-	alsaPeriod     = "1024"
-	alsaMixerCtl   = "PRI_MI2S_RX Audio Mixer MultiMedia2"
+	alsaFIFOPath = "/run/vic-cloud/xiaozhi_alsa.fifo"
+	alsaCard     = "0"
+	alsaDevice   = "1"
+	alsaRate     = "16000"
+	alsaChannels = "1"
+	alsaPeriod   = "1024"
+	alsaMixerCtl = "PRI_MI2S_RX Audio Mixer MultiMedia2"
+	alsaQueueCap = 256
 )
 
 var (
 	alsaMu     sync.Mutex
 	alsaCmd    *exec.Cmd
 	alsaWriter *os.File
+	alsaPCMCh  chan []byte
+	alsaDone   chan struct{}
 	alsaBytes  int64
 	alsaReady  atomic.Bool
 	mixerReady atomic.Bool
@@ -63,15 +71,30 @@ func ensureMM2Mixer() {
 }
 
 func alsaKillLocked() {
-	if alsaWriter != nil {
-		_ = alsaWriter.Close()
-		alsaWriter = nil
+	ch := alsaPCMCh
+	alsaPCMCh = nil
+	if ch != nil {
+		func() {
+			defer func() { _ = recover() }()
+			close(ch)
+		}()
 	}
 	if alsaCmd != nil && alsaCmd.Process != nil {
 		_ = alsaCmd.Process.Kill()
-		_, _ = alsaCmd.Process.Wait()
+	}
+	// Pump owns Wait() and writer Close(); just wait for it to finish.
+	done := alsaDone
+	if done != nil {
+		alsaMu.Unlock()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+		alsaMu.Lock()
 	}
 	alsaCmd = nil
+	alsaWriter = nil
+	alsaDone = nil
 	alsaBytes = 0
 	alsaReady.Store(false)
 	_ = os.Remove(alsaFIFOPath)
@@ -101,7 +124,6 @@ func alsaStart() error {
 		return fmt.Errorf("alsa mkfifo: %w", err)
 	}
 
-	// O_RDWR so open does not block waiting for tinyplay's read end.
 	w, err := os.OpenFile(alsaFIFOPath, os.O_RDWR, 0)
 	if err != nil {
 		_ = os.Remove(alsaFIFOPath)
@@ -119,36 +141,75 @@ func alsaStart() error {
 		return fmt.Errorf("tinyplay start: %w", err)
 	}
 
+	pcmCh := make(chan []byte, alsaQueueCap)
+	done := make(chan struct{})
 	alsaCmd = cmd
 	alsaWriter = w
+	alsaPCMCh = pcmCh
+	alsaDone = done
 	alsaBytes = 0
 	alsaReady.Store(true)
+
+	go alsaPump(w, pcmCh, done, cmd)
+
 	log.Println("[Xiaozhi][ALSA] tinyplay started (MM2 16k mono)")
 	return nil
 }
 
+func alsaPump(w *os.File, pcmCh <-chan []byte, done chan struct{}, cmd *exec.Cmd) {
+	defer func() {
+		_ = w.Close()
+		_, _ = cmd.Process.Wait()
+		alsaMu.Lock()
+		if alsaCmd == cmd {
+			alsaCmd = nil
+			alsaWriter = nil
+			alsaPCMCh = nil
+			alsaDone = nil
+		}
+		alsaMu.Unlock()
+		alsaReady.Store(false)
+		_ = os.Remove(alsaFIFOPath)
+		close(done)
+		log.Println("[Xiaozhi][ALSA] tinyplay finished")
+		_ = os.Remove(BusyPath)
+		_ = os.Remove("/run/xiaozhi-busy")
+	}()
+
+	for pcm := range pcmCh {
+		if len(pcm) == 0 {
+			continue
+		}
+		if _, err := w.Write(pcm); err != nil {
+			log.Println("[Xiaozhi][ALSA] write:", err)
+			return
+		}
+	}
+}
+
 func alsaWrite(pcm []byte) (written int64, err error) {
 	if len(pcm) == 0 {
-		alsaMu.Lock()
-		n := alsaBytes
-		alsaMu.Unlock()
-		return n, nil
+		return alsaBytesWritten(), nil
 	}
+	cp := make([]byte, len(pcm))
+	copy(cp, pcm)
+
 	alsaMu.Lock()
-	w := alsaWriter
+	ch := alsaPCMCh
 	alsaMu.Unlock()
-	if w == nil {
+	if ch == nil {
 		return -1, fmt.Errorf("alsa not started")
 	}
-	// ALSA backpressure: Write blocks when the period buffer is full.
-	n, err := w.Write(pcm)
+	defer func() {
+		if recover() != nil {
+			err = fmt.Errorf("alsa closed")
+		}
+	}()
+	ch <- cp
 	alsaMu.Lock()
-	alsaBytes += int64(n)
+	alsaBytes += int64(len(cp))
 	total := alsaBytes
 	alsaMu.Unlock()
-	if err != nil {
-		return total, fmt.Errorf("alsa write: %w", err)
-	}
 	return total, nil
 }
 
@@ -158,39 +219,31 @@ func alsaBytesWritten() int64 {
 	return alsaBytes
 }
 
-// alsaEnd closes the FIFO so tinyplay drains remaining PCM. Does not block —
-// WaitPlaybackIdle / AlsaCancel observe AlsaActive.
+// alsaEnd closes the PCM queue so the pump drains to tinyplay then exits.
 func alsaEnd() error {
 	alsaMu.Lock()
-	w := alsaWriter
-	alsaWriter = nil
-	cmd := alsaCmd
+	ch := alsaPCMCh
+	done := alsaDone
 	alsaMu.Unlock()
-
-	if w != nil {
-		_ = w.Close()
+	if ch != nil {
+		func() {
+			defer func() { _ = recover() }()
+			close(ch)
+		}()
 	}
-	if cmd == nil {
+	alsaMu.Lock()
+	if alsaPCMCh == ch {
+		alsaPCMCh = nil
+	}
+	alsaMu.Unlock()
+	if done == nil {
 		alsaReady.Store(false)
-		_ = os.Remove(alsaFIFOPath)
 		return nil
 	}
-
-	go func() {
-		_ = cmd.Wait()
-		alsaMu.Lock()
-		if alsaCmd == cmd {
-			alsaCmd = nil
-		}
-		alsaMu.Unlock()
-		alsaReady.Store(false)
-		_ = os.Remove(alsaFIFOPath)
-		log.Println("[Xiaozhi][ALSA] tinyplay finished")
-	}()
 	return nil
 }
 
-// AlsaActive is true while tinyplay is running.
+// AlsaActive is true while tinyplay / pump is still running.
 func AlsaActive() bool {
 	return alsaReady.Load()
 }

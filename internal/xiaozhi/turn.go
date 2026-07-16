@@ -309,11 +309,62 @@ sttWait:
 		}
 	}
 
+	// Under ALSA, WSS demux may deliver TTSStateStop while Opus frames are still
+	// sitting in audioCh — flush them before closing the FIFO or speech cuts off.
+	flushQueuedOpus := func() {
+		if !UseAlsaPlayback() || !streamStarted || streamEnded {
+			return
+		}
+		flushed := 0
+		timer := time.NewTimer(300 * time.Millisecond)
+		defer timer.Stop()
+		for {
+			select {
+			case opusFrame := <-client.AudioCh():
+				if dec == nil || decErr != nil {
+					continue
+				}
+				pcm24k, err := dec.DecodeFrame(opusFrame)
+				if err != nil {
+					continue
+				}
+				pcm16k := Downsample24kTo16k(pcm24k)
+				if StreamAppendSuspended() || DropPostCaptureOpus() {
+					continue
+				}
+				if _, err := StreamAppend(pcm16k); err != nil {
+					return
+				}
+				pcmBytesStreamed += len(pcm16k)
+				audioFrames++
+				lastAudioAt = time.Now()
+				flushed++
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(150 * time.Millisecond)
+			case <-timer.C:
+				if flushed > 0 {
+					log.Printf("[Xiaozhi][ALSA] flushed %d queued Opus frames before StreamEnd", flushed)
+				}
+				return
+			}
+		}
+	}
+
+	endStreamFlush := func() {
+		flushQueuedOpus()
+		endStream()
+	}
+
 	defer func() {
 		if turnCtx.Err() == context.Canceled {
 			return
 		}
-		endStream()
+		endStreamFlush()
 	}()
 
 	resetStaleTTSBlip := func() {
@@ -378,7 +429,7 @@ sttWait:
 						log.Printf("[Xiaozhi][TTS] analysis stop after %d frames — ending normally", audioFrames)
 						ClearAwaitPostCaptureStream()
 						ttsStopped = true
-						endStream()
+						endStreamFlush()
 						continue
 					}
 					if PostCaptureToolDone() && !streamStarted &&
@@ -389,7 +440,7 @@ sttWait:
 						abortServerTTS("post_camera_no_analysis")
 						AbandonPostCaptureAwait("tts_stop_no_analysis")
 						ttsStopped = true
-						endStream()
+						endStreamFlush()
 						continue
 					}
 					log.Println("[Xiaozhi][TTS] ignoring premature stop during/after camera")
@@ -424,7 +475,7 @@ sttWait:
 					rx, dropped := client.AudioRXStats()
 					log.Printf("[Xiaozhi][TTS] stop — no audio (wss_rx=%d dropped=%d)", rx, dropped)
 				}
-				endStream()
+				endStreamFlush()
 			}
 
 		case llmMsg := <-client.LLMCh():
@@ -541,7 +592,7 @@ sttWait:
 			forceClose = true
 			endConversation = true
 			log.Println("[Xiaozhi] goodbye received — end conversation (no relisten)")
-			endStream()
+			endStreamFlush()
 
 		case err := <-client.ErrCh():
 			log.Println("[Xiaozhi] server error during TTS:", err)
@@ -549,7 +600,7 @@ sttWait:
 			forceClose = true
 			// Server drop alone is enough; EndConversation is set when SessionAlive
 			// is false after FinishTurn closes the WSS — no STT keyword matching.
-			endStream()
+			endStreamFlush()
 
 		case <-idleTicker.C:
 			// Sync tools/call that the MCP pump queued while we were streaming TTS.
@@ -575,7 +626,7 @@ sttWait:
 				abortServerTTS("post_camera_await_timeout")
 				AbandonPostCaptureAwait("await_timeout_12s")
 				ttsStopped = true
-				endStream()
+				endStreamFlush()
 				continue
 			}
 			// Hold normal idle gap open only briefly while waiting for analysis Opus.
@@ -591,7 +642,7 @@ sttWait:
 				ClearAwaitPostCaptureStream()
 				abortServerTTS("idle_timeout")
 				ttsStopped = true
-				endStream()
+				endStreamFlush()
 			}
 
 		case <-ttsAbsoluteDeadline:
@@ -599,7 +650,7 @@ sttWait:
 				log.Println("[Xiaozhi] TTS absolute deadline reached (partial result ok)")
 				abortServerTTS("max_duration")
 				ttsStopped = true
-				endStream()
+				endStreamFlush()
 			} else {
 				releaseListenUI("tts_absolute_timeout")
 				return nil, fmt.Errorf("timeout waiting for TTS response (%v)", ttsAbsoluteMax)
