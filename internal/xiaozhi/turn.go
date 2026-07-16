@@ -521,6 +521,19 @@ sttWait:
 				}
 				continue
 			}
+
+			// Camera path soft-ended ALSA/ExternalAudio out-of-band; streamStarted
+			// may still be true if no Opus arrived during suspend — force re-arm.
+			if ConsumePlaybackForceRearm() ||
+				(UseAlsaPlayback() && streamStarted && !AlsaActive() &&
+					(AwaitPostCaptureStream() || PostCaptureToolDone())) {
+				log.Println("[Xiaozhi][TTS] re-arm after camera (speaker was soft-ended)")
+				streamStarted = false
+				streamEnded = false
+				headPadDone = false
+				SetPlaying(false)
+			}
+
 			audioFrames++
 			audioOpusBytes += len(opusFrame)
 			lastAudioAt = time.Now()
@@ -568,6 +581,37 @@ sttWait:
 						abortServerTTS("pcm_cap")
 						_ = StreamEnd()
 						ttsStopped = true
+						continue
+					}
+					// ALSA died mid-turn (e.g. race with camera soft-end) — one re-arm retry.
+					if UseAlsaPlayback() && !AlsaActive() && !streamEnded {
+						log.Println("[Xiaozhi][TTS] ALSA dead on append — re-arm and retry")
+						streamStarted = false
+						streamEnded = false
+						headPadDone = false
+						primeBytes, aerr := ArmStreamWithSilencePrime()
+						if aerr != nil {
+							log.Println("[Xiaozhi][TTS] re-arm failed:", aerr)
+							_ = StreamEnd()
+							SetPlaying(false)
+							doStream = false
+							ttsStopped = true
+							continue
+						}
+						pcmBytesStreamed = primeBytes
+						streamStarted = true
+						firstAudioAt = time.Now()
+						SetPlaying(true)
+						if _, err2 := StreamAppend(pcm16k); err2 != nil {
+							log.Println("[Xiaozhi][TTS] pcm append after re-arm:", err2)
+							_ = StreamEnd()
+							SetPlaying(false)
+							streamStarted = false
+							doStream = false
+							ttsStopped = true
+							continue
+						}
+						pcmBytesStreamed += len(pcm16k)
 						continue
 					}
 					log.Println("[Xiaozhi][TTS] pcm append:", err)

@@ -54,6 +54,10 @@ var (
 	postCaptureToolDone       atomic.Bool
 	postCaptureResumeUnixNano atomic.Int64
 	postCaptureToolDoneNano   atomic.Int64
+	// playbackForceRearm: SuspendPlaybackForCapture killed the speaker (ALSA /
+	// ExternalAudio) but turn.go's streamStarted may still be true if no Opus
+	// arrived during suspend — analysis TTS then appends with no player.
+	playbackForceRearm atomic.Bool
 )
 
 func clearStreamFlags() {
@@ -183,7 +187,14 @@ func SuspendPlaybackForCapture() {
 	_ = os.Remove(BusyPath)
 	_ = os.Remove("/run/xiaozhi-busy")
 	SetPlaying(false)
+	playbackForceRearm.Store(true)
 	time.Sleep(50 * time.Millisecond)
+}
+
+// ConsumePlaybackForceRearm is true once after camera suspend so turn.go
+// re-arms ALSA/ExternalAudio for analysis TTS.
+func ConsumePlaybackForceRearm() bool {
+	return playbackForceRearm.Swap(false)
 }
 
 // ResumePlaybackAfterCapture frees the speaker; Opus stays dropped until the
@@ -196,6 +207,7 @@ func ResumePlaybackAfterCapture() {
 	postCaptureToolDone.Store(false)
 	postCaptureToolDoneNano.Store(0)
 	postCaptureResumeUnixNano.Store(time.Now().UnixNano())
+	playbackForceRearm.Store(true)
 	log.Println("[Xiaozhi] analyze_photo: resume — stream analysis after tool reply")
 	time.Sleep(80 * time.Millisecond)
 }
