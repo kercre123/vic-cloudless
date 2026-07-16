@@ -33,8 +33,12 @@ const (
 	alsaRate     = "16000"
 	alsaChannels = "1"
 	alsaPeriod   = "1024"
-	alsaMixerCtl = "PRI_MI2S_RX Audio Mixer MultiMedia2"
-	alsaQueueCap = 256
+	// Default tinyplay -n is 2 → buffer 2048 @ 16kHz (~128ms). Too small on
+	// Vector while Wwise holds MM1; underruns sound like crackle ("rè").
+	alsaPeriodCount = "8" // ~512ms buffer
+	alsaMixerMM2    = "PRI_MI2S_RX Audio Mixer MultiMedia2"
+	alsaMixerMM1    = "PRI_MI2S_RX Audio Mixer MultiMedia1"
+	alsaQueueCap    = 256
 )
 
 var (
@@ -46,6 +50,7 @@ var (
 	alsaBytes  int64
 	alsaReady  atomic.Bool
 	mixerReady atomic.Bool
+	mm1Ducked  atomic.Bool
 )
 
 // UseAlsaPlayback reports whether Xiaozhi TTS should go to ALSA (Plan B).
@@ -57,17 +62,38 @@ func UseAlsaPlayback() bool {
 	return v != "0" && v != "false" && v != "off" && v != "no"
 }
 
+func tinymixSet(control, value string) {
+	cmd := exec.Command("tinymix", "set", control, value)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		log.Printf("[Xiaozhi][ALSA] tinymix set %q=%s failed: %v — %s", control, value, err, string(out))
+	}
+}
+
 func ensureMM2Mixer() {
 	if mixerReady.Load() {
 		return
 	}
-	cmd := exec.Command("tinymix", "set", alsaMixerCtl, "1")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		log.Printf("[Xiaozhi][ALSA] tinymix MM2 enable failed: %v — %s", err, string(out))
-		return
-	}
+	tinymixSet(alsaMixerMM2, "1")
 	mixerReady.Store(true)
 	log.Println("[Xiaozhi][ALSA] MultiMedia2 mixer enabled")
+}
+
+// duckWwiseMM1 mutes MultiMedia1→speaker while Xiaozhi TTS plays on MM2.
+// Both paths share PRI_MI2S_RX; mixing 32kHz Wwise + 16kHz TTS crackles.
+func duckWwiseMM1() {
+	if mm1Ducked.Swap(true) {
+		return
+	}
+	tinymixSet(alsaMixerMM1, "0")
+	log.Println("[Xiaozhi][ALSA] ducked MultiMedia1 (Wwise) for clean TTS")
+}
+
+func unduckWwiseMM1() {
+	if !mm1Ducked.Swap(false) {
+		return
+	}
+	tinymixSet(alsaMixerMM1, "1")
+	log.Println("[Xiaozhi][ALSA] restored MultiMedia1 (Wwise)")
 }
 
 func alsaKillLocked() {
@@ -98,6 +124,7 @@ func alsaKillLocked() {
 	alsaBytes = 0
 	alsaReady.Store(false)
 	_ = os.Remove(alsaFIFOPath)
+	unduckWwiseMM1()
 }
 
 // AlsaCancel stops ALSA playback immediately (barge-in / cleanup).
@@ -115,29 +142,35 @@ func alsaStart() error {
 	defer alsaMu.Unlock()
 	alsaKillLocked()
 	ensureMM2Mixer()
+	duckWwiseMM1()
 
 	if err := os.MkdirAll(filepath.Dir(alsaFIFOPath), 0775); err != nil {
+		unduckWwiseMM1()
 		return fmt.Errorf("alsa mkdir: %w", err)
 	}
 	_ = os.Remove(alsaFIFOPath)
 	if err := unix.Mkfifo(alsaFIFOPath, 0666); err != nil {
+		unduckWwiseMM1()
 		return fmt.Errorf("alsa mkfifo: %w", err)
 	}
 
 	w, err := os.OpenFile(alsaFIFOPath, os.O_RDWR, 0)
 	if err != nil {
 		_ = os.Remove(alsaFIFOPath)
+		unduckWwiseMM1()
 		return fmt.Errorf("alsa open fifo: %w", err)
 	}
 
 	cmd := exec.Command("tinyplay", alsaFIFOPath,
 		"-D", alsaCard, "-d", alsaDevice,
-		"-i", "raw", "-c", alsaChannels, "-r", alsaRate, "-p", alsaPeriod)
+		"-i", "raw", "-c", alsaChannels, "-r", alsaRate,
+		"-p", alsaPeriod, "-n", alsaPeriodCount)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
 		_ = w.Close()
 		_ = os.Remove(alsaFIFOPath)
+		unduckWwiseMM1()
 		return fmt.Errorf("tinyplay start: %w", err)
 	}
 
@@ -152,7 +185,7 @@ func alsaStart() error {
 
 	go alsaPump(w, pcmCh, done, cmd)
 
-	log.Println("[Xiaozhi][ALSA] tinyplay started (MM2 16k mono)")
+	log.Println("[Xiaozhi][ALSA] tinyplay started (MM2 16k mono, buffer ~512ms)")
 	return nil
 }
 
@@ -174,6 +207,7 @@ func alsaPump(w *os.File, pcmCh <-chan []byte, done chan struct{}, cmd *exec.Cmd
 		log.Println("[Xiaozhi][ALSA] tinyplay finished")
 		_ = os.Remove(BusyPath)
 		_ = os.Remove("/run/xiaozhi-busy")
+		unduckWwiseMM1()
 	}()
 
 	for pcm := range pcmCh {
