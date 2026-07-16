@@ -112,7 +112,6 @@ func CloseSession() {
 	sess.mu.Lock()
 	closeSessionLocked("manual")
 	sess.mu.Unlock()
-	RequestAnimMemoryReclaim("wss_manual")
 }
 
 // InvalidateSession drops a dead/broken WSS without waiting for idle.
@@ -240,9 +239,6 @@ func onSessionIdleTimeout() {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	closeSessionLocked("idle")
-	// Delayed reclaim only if anim stays bloated and user does not wake —
-	// immediate reclaim here caused mic→NoCloud.
-	ScheduleIdleAnimReclaim(75*time.Second, "wss_idle_delayed")
 }
 
 // BindTurn registers the active listen/TTS round cancel (does not own the WSS).

@@ -288,8 +288,6 @@ func (strm *Streamer) runXiaozhiTurn() {
 			log.Println("[Xiaozhi] WSS closed — mic closed until Hey Vector / button (no auto-relisten)")
 			xiaozhi.ClearPendingMCPIntent("wss closed")
 			log.Println("[Xiaozhi][TTS] turn done; session:", xiaozhi.ActiveSessionID())
-			// Soft-restart anim so RSS returns ~50MB (malloc_trim cannot).
-			xiaozhi.RequestAnimMemoryReclaim("wss_closed_after_turn")
 			return
 		}
 		if xiaozhi.ContinuousMode() && !xiaozhi.InBlackjackGameMode() {
@@ -305,7 +303,6 @@ func (strm *Streamer) runXiaozhiTurn() {
 				xiaozhi.DisarmRelistenPending()
 				log.Println("[Xiaozhi] WSS closed during playback wait — skip relisten")
 				xiaozhi.ClearPendingMCPIntent("wss closed after playback")
-				xiaozhi.RequestAnimMemoryReclaim("wss_closed_during_wait")
 				return
 			}
 			if err := xiaozhi.TriggerRelisten(); err != nil {

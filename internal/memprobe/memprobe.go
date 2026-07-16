@@ -79,9 +79,6 @@ func run() {
 			sys["MemTotal"], sys["MemFree"], sys["MemAvailable"], sys["AnonPages"], sys["Cached"],
 			strings.Join(parts, " "))
 
-		// Plan B ALSA: anim no longer balloons from Xiaozhi TTS — reclaim disabled
-		// in xiaozhi.MaybeReclaimAnimIfBloated (animReclaimEnabled=false).
-
 		time.Sleep(interval)
 	}
 }
