@@ -113,6 +113,7 @@ func RunTurn(ctx context.Context, audioStream <-chan []byte, cfg Config, afterST
 			return nil, fmt.Errorf("listen start: %w", err)
 		}
 	}
+	log.Println("[Xiaozhi][Mic] ListenStart OK — waiting for anim uplink")
 
 	idleTimeout := time.Duration(cfg.IdleTimeoutSec) * time.Second
 	if idleTimeout < 5*time.Second {
@@ -158,6 +159,8 @@ streamLoop:
 				audioSendCount++
 				if audioSendCount == 1 {
 					MarkMicUplink()
+					log.Printf("[Xiaozhi][Mic] first uplink frame (+%v after ListenStart)",
+						time.Since(listenStartAt).Round(time.Millisecond))
 				}
 			}
 		// Do NOT drain TTS/LLM/Audio here. Tenclass often starts TTS as soon as STT
@@ -186,6 +189,8 @@ streamLoop:
 		log.Println("[Xiaozhi] listen stop error:", err)
 	}
 	MarkMicListenEnded()
+	listenDur := time.Since(listenStartAt).Round(time.Millisecond)
+	log.Printf("[Xiaozhi][Mic] ListenStop — sent %d opus frames, uplink %v", audioSendCount, listenDur)
 
 	// Beat engine Intent timeout (NoCloud) as soon as mic closes — Xiaozhi STT
 	// continues on WSS independently of the Vector cloud stream.
@@ -202,18 +207,22 @@ streamLoop:
 	var sttText string
 	sttTimer := time.NewTimer(sttTimeout)
 	defer sttTimer.Stop()
+	sttWaitStart := time.Now()
 	log.Printf("[Xiaozhi][Mic] waiting for STT (sent %d frames, timeout %v)", audioSendCount, sttTimeout)
 sttWait:
 	for {
 		select {
 		case sttText = <-client.STTCh():
-			log.Printf("[Xiaozhi][Mic] STT: %s", sttText)
+			log.Printf("[Xiaozhi][Mic] STT ok (+%v wait): %q",
+				time.Since(sttWaitStart).Round(time.Millisecond), sttText)
 			break sttWait
 		// Do NOT drain TTS/LLM/Audio while waiting for STT — server may already be
 		// streaming the reply (see TRACE: binary #1..N before "waiting for STT").
 		case err := <-client.ErrCh():
 			return nil, fmt.Errorf("waiting for STT: %w", err)
 		case <-sttTimer.C:
+			log.Printf("[Xiaozhi][Mic] STT timeout after %v (sent %d frames)",
+				time.Since(sttWaitStart).Round(time.Millisecond), audioSendCount)
 			return nil, fmt.Errorf("timeout waiting for STT (sent %d frames)", audioSendCount)
 		case <-turnCtx.Done():
 			if turnCtx.Err() == context.Canceled {
@@ -224,6 +233,7 @@ sttWait:
 	}
 
 	if sttText == "" {
+		log.Println("[Xiaozhi][Mic] STT empty string from server")
 		return nil, fmt.Errorf("empty STT result")
 	}
 
@@ -400,10 +410,7 @@ sttWait:
 				if ttsMsg.Text != "" {
 					responseText = ttsMsg.Text
 					ttsSentences = append(ttsSentences, ttsMsg.Text)
-					// Long stories spam journalctl — log first sentence only.
-					if len(ttsSentences) == 1 {
-						log.Println("[Xiaozhi][TTS] sentence:", ttsMsg.Text)
-					}
+					log.Printf("[Xiaozhi][TTS] sentence #%d: %q", len(ttsSentences), ttsMsg.Text)
 				}
 			case TTSStateStop:
 				// Stale stop from a prior truncated TTS (arrived after SendText).
@@ -468,6 +475,10 @@ sttWait:
 						firstAudioAt.Sub(ttsPhaseStart).Round(time.Millisecond),
 						time.Since(ttsPhaseStart).Round(time.Millisecond),
 						rx, dropped)
+					if len(ttsSentences) > 0 {
+						log.Printf("[Xiaozhi][TTS] transcript (%d): %s",
+							len(ttsSentences), strings.Join(ttsSentences, " | "))
+					}
 					if dropped > 0 {
 						log.Printf("[Xiaozhi][TTS] WARNING: %d WSS frames dropped — possible missing head", dropped)
 					}
@@ -479,11 +490,14 @@ sttWait:
 			}
 
 		case llmMsg := <-client.LLMCh():
-			if llmMsg.Text != "" && responseText == "" {
-				responseText = llmMsg.Text
+			if llmMsg.Text != "" {
+				llmFullText.WriteString(llmMsg.Text)
+				if responseText == "" {
+					responseText = llmMsg.Text
+				}
 				// Skip emoji-only LLM chatter in logs.
-				if !(len([]rune(llmMsg.Text)) <= 2) {
-					log.Println("[Xiaozhi][TTS] LLM:", llmMsg.Text)
+				if len([]rune(llmMsg.Text)) > 2 {
+					log.Printf("[Xiaozhi][LLM] chunk: %q", llmMsg.Text)
 				}
 			}
 			ttsStarted = true
@@ -547,6 +561,9 @@ sttWait:
 					pcmBytesStreamed = 0
 					ttsSentences = nil
 					log.Println("[Xiaozhi][TTS] streaming analysis after camera")
+				}
+				if !sawTTSStart {
+					log.Println("[Xiaozhi][TTS] first audio before server start msg")
 				}
 				primeBytes, err := ArmStreamWithSilencePrime()
 				if err != nil {
@@ -718,6 +735,16 @@ sttWait:
 	if finalText == "" && llmFullText.Len() > 0 {
 		finalText = llmFullText.String()
 	}
+	if llmFullText.Len() > 0 {
+		log.Printf("[Xiaozhi][LLM] full: %q", llmFullText.String())
+	}
+	ttsOut := finalText
+	if len(ttsSentences) > 0 {
+		ttsOut = strings.Join(ttsSentences, " ")
+	}
+	log.Printf("[Xiaozhi][Mic] turn done STT=%q", sttText)
+	log.Printf("[Xiaozhi][TTS] turn done text=%q sentences=%d streamed=%v pcmBytes=%d",
+		ttsOut, len(ttsSentences), doStream && streamStarted, pcmBytesStreamed)
 
 	result := &TurnResult{
 		STTText:           sttText,

@@ -74,13 +74,25 @@ func run() {
 			}
 		}
 		up := time.Since(boot).Round(time.Second)
-		log.Printf("[MemProbe] #%d up=%s phase=%s sys={total=%dkB free=%dkB avail=%dkB anon=%dkB cached=%dkB} procs={%s}",
+		micjob := strings.TrimSpace(readFileTrim("/run/vic-anim-micjob.txt"))
+		if micjob == "" {
+			micjob = "n/a"
+		}
+		log.Printf("[MemProbe] #%d up=%s phase=%s sys={total=%dkB free=%dkB avail=%dkB anon=%dkB cached=%dkB} procs={%s} micjob={%s}",
 			tick, up, phase,
 			sys["MemTotal"], sys["MemFree"], sys["MemAvailable"], sys["AnonPages"], sys["Cached"],
-			strings.Join(parts, " "))
+			strings.Join(parts, " "), micjob)
 
 		time.Sleep(interval)
 	}
+}
+
+func readFileTrim(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 func detectPhase() string {

@@ -100,7 +100,7 @@ func main() {
 
 	log.Println("Starting up")
 
-	// TEMP_PERF_RAM_PROBE — 10s total + per-process RSS; remove memprobe after profiling.
+	// TEMP_PERF_RAM_PROBE — 10s total + per-process RSS; remove after profiling.
 	memprobe.Start()
 
 	// Load Xiaozhi config early so all subsystems can check Enabled().
