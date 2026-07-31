@@ -39,20 +39,26 @@ const (
 	alsaPeriod   = "1024"
 	// Default tinyplay -n is 2 → buffer 2048 @ 16kHz (~128ms). Too small on
 	// Vector while Wwise holds MM1; underruns sound like crackle ("rè").
-	alsaPeriodCount = "8" // ~512ms buffer
+	// 16 periods ≈ ~1s at 16kHz/1024 — covers Xiaozhi tool-call TTS gaps.
+	alsaPeriodCount = "16"
 	alsaMixerMM2    = "PRI_MI2S_RX Audio Mixer MultiMedia2"
 	alsaQueueCap    = 256
+	// Keepalive silence while TTS is armed but Opus pauses (MCP/tool wait).
+	// ~32ms chunks @ 16kHz mono s16le; only when the PCM queue is empty.
+	alsaKeepaliveEvery = 32 * time.Millisecond
+	alsaKeepaliveBytes = 1024 // 512 samples * 2 bytes
 )
 
 var (
-	alsaMu     sync.Mutex
-	alsaCmd    *exec.Cmd
-	alsaWriter *os.File
-	alsaPCMCh  chan []byte
-	alsaDone   chan struct{}
-	alsaBytes  int64
-	alsaReady  atomic.Bool
-	mixerReady atomic.Bool
+	alsaMu        sync.Mutex
+	alsaCmd       *exec.Cmd
+	alsaWriter    *os.File
+	alsaPCMCh     chan []byte
+	alsaDone      chan struct{}
+	alsaBytes     int64
+	alsaReady     atomic.Bool
+	mixerReady    atomic.Bool
+	alsaKeepalive atomic.Bool
 )
 
 // UseAlsaPlayback reports whether Xiaozhi TTS should go to ALSA (Plan B).
@@ -81,6 +87,7 @@ func ensureMM2Mixer() {
 }
 
 func alsaKillLocked() {
+	alsaKeepalive.Store(false)
 	ch := alsaPCMCh
 	alsaPCMCh = nil
 	if ch != nil {
@@ -160,15 +167,17 @@ func alsaStart() error {
 	alsaDone = done
 	alsaBytes = 0
 	alsaReady.Store(true)
+	alsaKeepalive.Store(true)
 
 	go alsaPump(w, pcmCh, done, cmd)
 
-	log.Println("[Xiaozhi][ALSA] tinyplay started (MM2 16k mono, buffer ~512ms)")
+	log.Println("[Xiaozhi][ALSA] tinyplay started (MM2 16k mono, buffer ~1s, gap keepalive on)")
 	return nil
 }
 
 func alsaPump(w *os.File, pcmCh <-chan []byte, done chan struct{}, cmd *exec.Cmd) {
 	defer func() {
+		alsaKeepalive.Store(false)
 		_ = w.Close()
 		_, _ = cmd.Process.Wait()
 		alsaMu.Lock()
@@ -187,13 +196,54 @@ func alsaPump(w *os.File, pcmCh <-chan []byte, done chan struct{}, cmd *exec.Cmd
 		_ = os.Remove("/run/xiaozhi-busy")
 	}()
 
-	for pcm := range pcmCh {
-		if len(pcm) == 0 {
-			continue
-		}
-		if _, err := w.Write(pcm); err != nil {
-			log.Println("[Xiaozhi][ALSA] write:", err)
-			return
+	silence := make([]byte, alsaKeepaliveBytes)
+	ticker := time.NewTicker(alsaKeepaliveEvery)
+	defer ticker.Stop()
+
+	var lastRealPCM time.Time
+	var gapLogged bool
+	// Opus frames arrive ~20–60ms apart. Padding sooner splices silence into
+	// speech → crackle. Only pad after a real tool/LLM stall.
+	const (
+		minGapBeforePad = 350 * time.Millisecond
+		maxGapPad       = 45 * time.Second
+	)
+
+	for {
+		select {
+		case pcm, ok := <-pcmCh:
+			if !ok {
+				return
+			}
+			if len(pcm) == 0 {
+				continue
+			}
+			lastRealPCM = time.Now()
+			gapLogged = false
+			if _, err := w.Write(pcm); err != nil {
+				log.Println("[Xiaozhi][ALSA] write:", err)
+				return
+			}
+		case <-ticker.C:
+			if !alsaKeepalive.Load() || len(pcmCh) > 0 {
+				continue
+			}
+			if lastRealPCM.IsZero() {
+				continue
+			}
+			idle := time.Since(lastRealPCM)
+			if idle < minGapBeforePad || idle > maxGapPad {
+				continue
+			}
+			if !gapLogged {
+				log.Printf("[Xiaozhi][ALSA] gap keepalive after %v idle — silence for tool/LLM pause",
+					idle.Round(time.Millisecond))
+				gapLogged = true
+			}
+			if _, err := w.Write(silence); err != nil {
+				log.Println("[Xiaozhi][ALSA] keepalive write:", err)
+				return
+			}
 		}
 	}
 }
@@ -232,6 +282,7 @@ func alsaBytesWritten() int64 {
 
 // alsaEnd closes the PCM queue so the pump drains to tinyplay then exits.
 func alsaEnd() error {
+	alsaKeepalive.Store(false)
 	alsaMu.Lock()
 	ch := alsaPCMCh
 	done := alsaDone
