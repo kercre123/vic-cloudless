@@ -161,11 +161,13 @@ func (h *MCPHandler) HandleToolsList(msg ServerMessage) error {
 			"Get Anki Vector device status (platform, firmware). Call when user asks about the robot status.",
 			nil, nil),
 		toolDef("self.audio_speaker.set_volume",
-			"Set Vector speaker volume 0-100. Use when user asks to change volume / âm lượng / to nhỏ tiếng.",
+			"Set Vector master speaker volume. Pass 0-100 percent. "+
+				"0=mute; 1-20=VOLUME_1; 21-40=VOLUME_2; 41-60=VOLUME_3; 61-80=VOLUME_4; 81-100=VOLUME_5. "+
+				"Use when user asks to change volume / âm lượng / mute / to nhỏ tiếng.",
 			map[string]interface{}{
 				"volume": map[string]interface{}{
 					"type":        "number",
-					"description": "Volume level 0-100",
+					"description": "Volume 0-100 (mapped to 5 robot steps)",
 					"minimum":     0,
 					"maximum":     100,
 				},
@@ -275,9 +277,12 @@ func (h *MCPHandler) HandleToolCall(msg ServerMessage) (string, error) {
 		if vol > 100 {
 			vol = 100
 		}
+		level := percentToVolumeLevel(vol)
 		intent = "intent_imperative_volumelevel_extend"
-		params = map[string]string{"volume_level": fmt.Sprintf("%d", vol)}
-		text = fmt.Sprintf(`{"status":"ok","volume":%d}`, vol)
+		// Engine BehaviorVolume only accepts VOLUME_1..5 / min|low|medium|high|max — not raw %.
+		params = map[string]string{"volume_level": level}
+		text = fmt.Sprintf(`{"status":"ok","volume":%d,"level":%q}`, vol, level)
+		log.Printf("[Xiaozhi] MCP set_volume %d%% → %s", vol, level)
 
 	case "self.camera.take_photo":
 		// Engine take_a_photo REQUIRES empty_or_selfie via entity_photo_selfie.
@@ -372,6 +377,9 @@ func (h *MCPHandler) HandleToolCall(msg ServerMessage) (string, error) {
 		} else {
 			log.Printf("[Xiaozhi] MCP %s → intent %s", toolName, intent)
 		}
+		if intent == "intent_play_keepaway" || intent == "intent_play_popawheelie" {
+			log.Printf("[Xiaozhi][KeepawayFlow] step=mcp_queued intent=%s (await TTS, then same-stream OnIntent — no FakeTrigger/mic)", intent)
+		}
 		return intent, nil
 	}
 	return "", nil
@@ -410,11 +418,11 @@ var vectorActions = []vectorActionDef{
 	{ID: "turn_around", Intent: "intent_imperative_turnaround", Hint: "turn around / quay lại"},
 	{ID: "fistbump", Intent: "intent_play_fistbump", Hint: "fistbump / cụng tay"},
 	{ID: "roll_cube", Intent: "intent_play_rollcube", Hint: "roll cube"},
-	{ID: "pop_a_wheelie", Intent: "intent_play_popawheelie", Hint: "pop a wheelie"},
+	{ID: "pop_a_wheelie", Intent: "intent_play_popawheelie", Hint: "pop a wheelie / bốc đầu / bóc đầu / bốc đầu xe / wheelie / dựng đầu (cần cube)"},
 	{ID: "pickup_cube", Intent: "intent_play_pickupcube", Hint: "pick up cube"},
 	{ID: "fetch_cube", Intent: "intent_imperative_fetchcube", Hint: "fetch cube"},
 	{ID: "find_cube", Intent: "intent_imperative_findcube", Hint: "find cube"},
-	{ID: "keepaway", Intent: "intent_play_keepaway", Hint: "keep away"},
+	{ID: "keepaway", Intent: "intent_play_keepaway", Hint: "keep away / keepaway / giữ cube / chơi keep away (cần cube)"},
 	{ID: "blackjack", Intent: "intent_play_blackjack", Hint: "blackjack"},
 	{ID: "do_a_trick", Intent: "intent_play_anytrick", Hint: "do a trick"},
 	{ID: "good_robot", Intent: "intent_imperative_praise", Hint: "praise / giỏi quá"},
@@ -526,9 +534,36 @@ func vectorActionToolDescription() string {
 	b.WriteString(". ALWAYS call this tool when the user asks Vector to do a physical action ")
 	b.WriteString("(dance, fireworks/pháo hoa, go home, sleep, look at me, fistbump, move, play, greetings). ")
 	b.WriteString("Do NOT only describe the action in chat — invoke the tool. ")
-	b.WriteString("Examples: user asks for fireworks → action=fireworks; dance → action=dance; go home → action=go_home. ")
+	b.WriteString("Examples: fireworks → fireworks; dance → dance; go home → go_home; ")
+	b.WriteString("bốc đầu/bóc đầu/wheelie → pop_a_wheelie; keep away/keepaway → keepaway. ")
 	b.WriteString("For eye color prefer self.vector.set_eye_color (or action eye_purple / eye_next).")
 	return b.String()
+}
+
+// percentToVolumeLevel maps Xiaozhi/ESP-style 0–100% onto Vector master_volume.
+// 0 → mute (proto Volume::MUTE). 1–100 → five audible steps VOLUME_1..5.
+func percentToVolumeLevel(vol int) string {
+	if vol < 0 {
+		vol = 0
+	}
+	if vol > 100 {
+		vol = 100
+	}
+	if vol == 0 {
+		return "mute"
+	}
+	switch {
+	case vol <= 20:
+		return "VOLUME_1"
+	case vol <= 40:
+		return "VOLUME_2"
+	case vol <= 60:
+		return "VOLUME_3"
+	case vol <= 80:
+		return "VOLUME_4"
+	default:
+		return "VOLUME_5"
+	}
 }
 
 // EncodeIntentParamsJSON encodes params for cloud.IntentResult.Parameters.

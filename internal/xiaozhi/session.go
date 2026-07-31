@@ -726,10 +726,14 @@ func ClearPendingMCPIntent(reason string) {
 // place of intent_system_noaudio (same listen window).
 // Photo (and similar) intents are left queued so they run after TTS — early delivery
 // mid-speech used to drop take_a_photo (and raced ExternalAudio/vision).
+//
+// earlyIntent is intentionally kept after delivery so Peek/TurnResult still see the
+// action; clearing it here left RobotIntent empty → post-TTS "chat" relisten killed
+// Keepaway/PopAWheelie mid-game. Idempotent via earlyDeliveredIntent.
 func TakeMCPIntentForSameStreamDelivery() (intent string, params map[string]string, ok bool) {
 	earlyMu.Lock()
 	defer earlyMu.Unlock()
-	if earlyIntent == "" {
+	if earlyIntent == "" || earlyDeliveredIntent != "" {
 		return "", nil, false
 	}
 	if mcpDeferUntilAfterTTS(earlyIntent) {
@@ -737,14 +741,29 @@ func TakeMCPIntentForSameStreamDelivery() (intent string, params map[string]stri
 	}
 	intent = earlyIntent
 	params = earlyParams
-	earlyIntent = ""
-	earlyParams = nil
 	earlyDeliveredIntent = intent
 	return intent, params, true
 }
 
 // mcpDeferUntilAfterTTS: intents that need full robot control after confirmation TTS.
+// Cube play starts FindCube/drive while listen+TTS still own the body if delivered
+// early — that raced AI socket / left Vector stiff. Defer like take_a_photo.
 func mcpDeferUntilAfterTTS(intent string) bool {
+	switch intent {
+	case "intent_photo_take_extend",
+		"intent_play_keepaway",
+		"intent_play_popawheelie":
+		return true
+	default:
+		return false
+	}
+}
+
+// NeedsFreshListenDelivery: after TTS, FakeTrigger a new ReactToVoiceCommand.
+// Photo needs this (camera/stream ownership). Keepaway/popawheelie must NOT FakeTrigger —
+// that opens mic (ting + ListeningGetIn) which the user forbids for self-control intents;
+// they stay on same-stream OnIntent after TTS (mcpDeferUntilAfterTTS still blocks early mid-TTS delivery).
+func NeedsFreshListenDelivery(intent string) bool {
 	switch intent {
 	case "intent_photo_take_extend":
 		return true

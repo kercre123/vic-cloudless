@@ -74,6 +74,7 @@ func (strm *Streamer) deliverDeferredSelfControlIfAny() bool {
 	}
 	strm.receiver.OnStreamOpen("xiaozhi")
 	paramsJSON := xiaozhi.EncodeIntentParamsJSON(params)
+	log.Printf("[Xiaozhi][KeepawayFlow] step=deliver_on_new_stream intent=%s", intent)
 	log.Println("[Xiaozhi] delivering deferred self-control intent:", intent)
 	xiaozhi.MaybeEnterBlackjackFromIntent(intent)
 	strm.respOnce.Do(func() {
@@ -82,6 +83,7 @@ func (strm *Streamer) deliverDeferredSelfControlIfAny() bool {
 			Parameters: paramsJSON,
 		})
 	})
+	log.Printf("[Xiaozhi][KeepawayFlow] step=intent_sent_to_engine intent=%s (mic stays closed)", intent)
 	log.Println("[Xiaozhi] self-control done — mic closed until manual wake; session:", xiaozhi.ActiveSessionID())
 	return true
 }
@@ -278,7 +280,25 @@ func (strm *Streamer) runXiaozhiTurn() {
 			log.Println("[Xiaozhi] self-control already delivered on same listen — no FakeTrigger; mic closed until manual wake:", result.RobotIntent)
 			return
 		}
+		// Cube games / photo: FakeTrigger a fresh listen so VoiceFeatures can claim the
+		// intent. Same-stream follow-up after long TTS was ForceCleared (ReactToHand /
+		// HeldInPalm) — Keepaway never reached FindCube.
+		if xiaozhi.NeedsFreshListenDelivery(result.RobotIntent) {
+			log.Printf("[Xiaozhi][KeepawayFlow] step=after_tts_defer intent=%s (FakeTrigger next)", result.RobotIntent)
+			xiaozhi.SetDeferredIntent(result.RobotIntent, result.RobotIntentParams)
+			xiaozhi.ClearPendingMCPIntent("defer cube/photo for fresh listen")
+			time.Sleep(400 * time.Millisecond)
+			if err := xiaozhi.TriggerRelisten(); err != nil {
+				log.Printf("[Xiaozhi][KeepawayFlow] step=faketrigger_FAIL intent=%s err=%v", result.RobotIntent, err)
+			} else {
+				log.Printf("[Xiaozhi][KeepawayFlow] step=faketrigger_armed intent=%s — expect deliver_on_new_stream next", result.RobotIntent)
+			}
+			return
+		}
 		// Prefer same-stream OnIntent (no FakeTrigger). Stream may still be open after noaudio.
+		if result.RobotIntent == "intent_play_keepaway" || result.RobotIntent == "intent_play_popawheelie" {
+			log.Printf("[Xiaozhi][KeepawayFlow] step=after_tts_same_stream intent=%s (no FakeTrigger, mic stays closed)", result.RobotIntent)
+		}
 		log.Println("[Xiaozhi] dispatching self-control intent (no FakeTrigger):", result.RobotIntent)
 		delivered := false
 		strm.respOnce.Do(func() {
@@ -300,7 +320,18 @@ func (strm *Streamer) runXiaozhiTurn() {
 			xiaozhi.PrepareBlackjackSTT("after TTS dispatch")
 		}
 		xiaozhi.ClearPendingMCPIntent("after TTS self-control dispatch")
+		if result.RobotIntent == "intent_play_keepaway" || result.RobotIntent == "intent_play_popawheelie" {
+			log.Printf("[Xiaozhi][KeepawayFlow] step=intent_sent_to_engine intent=%s (mic closed, no FakeTrigger)", result.RobotIntent)
+		}
 		log.Println("[Xiaozhi] self-control dispatched — mic closed until manual wake; session:", xiaozhi.ActiveSessionID())
+		return
+	}
+
+	// Safety: early same-listen delivery may have raced Peek before TurnResult filled
+	// RobotIntent — never continuous-relisten over an already-dispatched self-control.
+	if intent, _, ok := xiaozhi.PeekMCPIntentQueued(); ok && xiaozhi.MCPAlreadyDeliveredOnSameStream(intent) {
+		xiaozhi.ClearPendingMCPIntent("after TTS, delivered but RobotIntent empty")
+		log.Println("[Xiaozhi] self-control already delivered (RobotIntent race) — mic closed until manual wake:", intent)
 		return
 	}
 
