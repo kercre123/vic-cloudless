@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -23,11 +22,11 @@ type OtaResult struct {
 }
 
 // FetchActivation POSTs to {ota_base_url}xiaozhi/ota/ and parses the response.
-// It auto-fills DeviceID from MAC and generates ClientID if either is empty, then saves config.
+// Empty DeviceID → random MAC; empty ClientID → UUID; then saves when caller persists cfg.
 func FetchActivation(cfg *Config) (OtaResult, error) {
 	cfg.OTABaseURL = normalizeOTAURL(cfg.OTABaseURL)
 	if cfg.DeviceID == "" {
-		cfg.DeviceID = firstNonLoopbackMAC()
+		cfg.DeviceID = genRandomMAC()
 	}
 	if cfg.ClientID == "" {
 		cfg.ClientID = genUUIDv4()
@@ -171,18 +170,11 @@ func normalizeOTAURL(u string) string {
 	return u
 }
 
-func firstNonLoopbackMAC() string {
-	ifaces, _ := net.Interfaces()
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		if len(iface.HardwareAddr) == 0 {
-			continue
-		}
-		return iface.HardwareAddr.String()
-	}
-	return ""
+func genRandomMAC() string {
+	var b [6]byte
+	rand.Read(b[:])
+	b[0] = (b[0] | 0x02) & 0xfe // locally administered, unicast
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", b[0], b[1], b[2], b[3], b[4], b[5])
 }
 
 func genUUIDv4() string {
