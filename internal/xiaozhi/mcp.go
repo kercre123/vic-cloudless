@@ -377,7 +377,8 @@ func (h *MCPHandler) HandleToolCall(msg ServerMessage) (string, error) {
 		} else {
 			log.Printf("[Xiaozhi] MCP %s → intent %s", toolName, intent)
 		}
-		if intent == "intent_play_keepaway" || intent == "intent_play_popawheelie" {
+		if intent == "intent_play_keepaway" || intent == "intent_play_popawheelie" ||
+			intent == "intent_play_rollcube" || intent == "intent_play_anytrick" {
 			log.Printf("[Xiaozhi][KeepawayFlow] step=mcp_queued intent=%s (await TTS, then same-stream OnIntent — no FakeTrigger/mic)", intent)
 		}
 		return intent, nil

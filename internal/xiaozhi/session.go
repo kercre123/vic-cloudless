@@ -747,12 +747,14 @@ func TakeMCPIntentForSameStreamDelivery() (intent string, params map[string]stri
 
 // mcpDeferUntilAfterTTS: intents that need full robot control after confirmation TTS.
 // Cube play starts FindCube/drive while listen+TTS still own the body if delivered
-// early — that raced AI socket / left Vector stiff. Defer like take_a_photo.
+// early — that raced AI socket / left Vector stiff / cut RollBlock mid-approach.
 func mcpDeferUntilAfterTTS(intent string) bool {
 	switch intent {
 	case "intent_photo_take_extend",
 		"intent_play_keepaway",
-		"intent_play_popawheelie":
+		"intent_play_popawheelie",
+		"intent_play_rollcube",
+		"intent_play_anytrick":
 		return true
 	default:
 		return false

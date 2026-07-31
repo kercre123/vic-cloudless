@@ -296,7 +296,8 @@ func (strm *Streamer) runXiaozhiTurn() {
 			return
 		}
 		// Prefer same-stream OnIntent (no FakeTrigger). Stream may still be open after noaudio.
-		if result.RobotIntent == "intent_play_keepaway" || result.RobotIntent == "intent_play_popawheelie" {
+		if result.RobotIntent == "intent_play_keepaway" || result.RobotIntent == "intent_play_popawheelie" ||
+			result.RobotIntent == "intent_play_rollcube" || result.RobotIntent == "intent_play_anytrick" {
 			log.Printf("[Xiaozhi][KeepawayFlow] step=after_tts_same_stream intent=%s (no FakeTrigger, mic stays closed)", result.RobotIntent)
 		}
 		log.Println("[Xiaozhi] dispatching self-control intent (no FakeTrigger):", result.RobotIntent)
@@ -320,7 +321,8 @@ func (strm *Streamer) runXiaozhiTurn() {
 			xiaozhi.PrepareBlackjackSTT("after TTS dispatch")
 		}
 		xiaozhi.ClearPendingMCPIntent("after TTS self-control dispatch")
-		if result.RobotIntent == "intent_play_keepaway" || result.RobotIntent == "intent_play_popawheelie" {
+		if result.RobotIntent == "intent_play_keepaway" || result.RobotIntent == "intent_play_popawheelie" ||
+			result.RobotIntent == "intent_play_rollcube" || result.RobotIntent == "intent_play_anytrick" {
 			log.Printf("[Xiaozhi][KeepawayFlow] step=intent_sent_to_engine intent=%s (mic closed, no FakeTrigger)", result.RobotIntent)
 		}
 		log.Println("[Xiaozhi] self-control dispatched — mic closed until manual wake; session:", xiaozhi.ActiveSessionID())
