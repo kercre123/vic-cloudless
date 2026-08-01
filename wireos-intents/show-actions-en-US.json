@@ -14,5 +14,23 @@
       "lam xe cuu hoa"
     ],
     "requiresexact": false
+  },
+  {
+    "name": "intent_imperative_sing",
+    "keyphrases": [
+      "sing",
+      "sing a song",
+      "sing song",
+      "sing something",
+      "hát",
+      "hat",
+      "hát đi",
+      "hat di",
+      "hát bài",
+      "hat bai",
+      "hát một bài",
+      "hat mot bai"
+    ],
+    "requiresexact": false
   }
 ]
