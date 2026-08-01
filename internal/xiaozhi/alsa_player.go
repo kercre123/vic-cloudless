@@ -39,8 +39,9 @@ const (
 	alsaPeriod   = "1024"
 	// Default tinyplay -n is 2 → buffer 2048 @ 16kHz (~128ms). Too small on
 	// Vector while Wwise holds MM1; underruns sound like crackle ("rè").
-	// 16 periods ≈ ~1s at 16kHz/1024 — covers Xiaozhi tool-call TTS gaps.
-	alsaPeriodCount = "16"
+	// 24 periods ≈ ~1.5s at 16kHz/1024 — absorbs normal sentence gaps without
+	// splicing silence; keepalive only for long tool/LLM stalls.
+	alsaPeriodCount = "24"
 	alsaMixerMM2    = "PRI_MI2S_RX Audio Mixer MultiMedia2"
 	alsaQueueCap    = 256
 	// Keepalive silence while TTS is armed but Opus pauses (MCP/tool wait).
@@ -171,7 +172,7 @@ func alsaStart() error {
 
 	go alsaPump(w, pcmCh, done, cmd)
 
-	log.Println("[Xiaozhi][ALSA] tinyplay started (MM2 16k mono, buffer ~1s, gap keepalive on)")
+	log.Println("[Xiaozhi][ALSA] tinyplay started (MM2 16k mono, buffer ~1.5s, gap keepalive on)")
 	return nil
 }
 
@@ -202,10 +203,12 @@ func alsaPump(w *os.File, pcmCh <-chan []byte, done chan struct{}, cmd *exec.Cmd
 
 	var lastRealPCM time.Time
 	var gapLogged bool
-	// Opus frames arrive ~20–60ms apart. Padding sooner splices silence into
-	// speech → crackle. Only pad after a real tool/LLM stall.
+	// Opus frames arrive ~20–60ms apart; Xiaozhi sentence gaps are often
+	// 300–800ms. Padding those splices silence into speech → crackle ("rè").
+	// Only pad after a real tool/LLM stall (~1s+); ~1.5s ALSA buffer covers
+	// normal inter-sentence pauses.
 	const (
-		minGapBeforePad = 350 * time.Millisecond
+		minGapBeforePad = 1000 * time.Millisecond
 		maxGapPad       = 45 * time.Second
 	)
 

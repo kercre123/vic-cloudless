@@ -426,6 +426,7 @@ var vectorActions = []vectorActionDef{
 	{ID: "keepaway", Intent: "intent_play_keepaway", Hint: "keep away / keepaway / giữ cube / chơi keep away (cần cube)"},
 	{ID: "blackjack", Intent: "intent_play_blackjack", Hint: "blackjack"},
 	{ID: "do_a_trick", Intent: "intent_play_anytrick", Hint: "do a trick"},
+	{ID: "firetruck", Intent: "intent_play_firetruck", Hint: "firetruck / xe cứu hỏa / còi xe / siren"},
 	{ID: "good_robot", Intent: "intent_imperative_praise", Hint: "praise / giỏi quá"},
 	{ID: "bad_robot", Intent: "intent_imperative_abuse", Hint: "scold / bad robot"},
 	{ID: "love_you", Intent: "intent_imperative_love", Hint: "i love you"},
@@ -533,9 +534,9 @@ func vectorActionToolDescription() string {
 	}
 	b.WriteString(strings.Join(parts, "; "))
 	b.WriteString(". ALWAYS call this tool when the user asks Vector to do a physical action ")
-	b.WriteString("(dance, fireworks/pháo hoa, go home, sleep, look at me, fistbump, move, play, greetings). ")
+	b.WriteString("(dance, fireworks/pháo hoa, firetruck/xe cứu hỏa, go home, sleep, look at me, fistbump, move, play, greetings). ")
 	b.WriteString("Do NOT only describe the action in chat — invoke the tool. ")
-	b.WriteString("Examples: fireworks → fireworks; dance → dance; go home → go_home; ")
+	b.WriteString("Examples: fireworks → fireworks; firetruck/xe cứu hỏa → firetruck; dance → dance; go home → go_home; ")
 	b.WriteString("bốc đầu/bóc đầu/wheelie → pop_a_wheelie; keep away/keepaway → keepaway. ")
 	b.WriteString("For eye color prefer self.vector.set_eye_color (or action eye_purple / eye_next).")
 	return b.String()
