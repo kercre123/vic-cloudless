@@ -257,7 +257,10 @@ func (strm *Streamer) runXiaozhiTurn() {
 		// Drop anim pending-relisten so OnAudioCompleted does not FakeTrigger early
 		// while we still wait for PCM drain — that caused mic open → mic open again.
 		xiaozhi.DisarmRelistenPending()
+		waitStart := time.Now()
 		idleOK := xiaozhi.WaitPlaybackIdle(result.PCMBytes, result.AudioStartedAt, 120*time.Second)
+		log.Printf("[Xiaozhi][TTS] speaker idle in %v (ok=%v); session: %s",
+			time.Since(waitStart).Round(time.Millisecond), idleOK, xiaozhi.ActiveSessionID())
 		// Free tmpfs PCM as soon as speaker is done (long stories otherwise linger).
 		xiaozhi.CleanupPlaybackFiles()
 		xiaozhi.SetPlaying(false)

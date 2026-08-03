@@ -289,10 +289,11 @@ sttWait:
 	streamStarted := false
 	streamEnded := false
 	headPadDone := false // Plan A: one head silence pad per stream before real PCM
-	// Mitigate pack: soft-cap ~250s of continuous server TTS/music to protect
-	// ALSA/Wwise on 426MB Vector (was 10m — multi-minute streams crashed anim).
+	// Soft-cap continuous server TTS. If no Opus for a while the cloud often
+	// stalled without TTSStop (listener stuck in silence keepalive). Tool/
+	// search gaps rarely exceed ~12s; was 45s and felt like mic "never opens".
+	const ttsIdleGap = 12 * time.Second
 	const ttsAbsoluteMax = 250 * time.Second
-	const ttsIdleGap = 45 * time.Second
 	const ttsSoftCapPCMBytes = 250 * 16000 * 2 // ~250s of 16kHz s16le
 	ttsAbsoluteDeadline := time.After(ttsAbsoluteMax)
 	idleTicker := time.NewTicker(1 * time.Second)

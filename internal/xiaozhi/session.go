@@ -440,34 +440,54 @@ func WaitPlaybackIdle(pcmBytes int, audioStartedAt time.Time, maxWait time.Durat
 		earliest = time.Now().Add(margin)
 	}
 
-	// If anim never clears busy (missed Complete), do not block relisten for maxWait (was 120s).
-	stuckBusyDeadline := earliest.Add(3 * time.Second)
+	stuckGrace := 3 * time.Second
+	if UseAlsaPlayback() {
+		// ALSA path owns tinyplay: once the player is gone the room is quiet.
+		// Do NOT hold the mic closed for a theoretical PCM floor after the
+		// player already exited — that caused multi-second "audio done but
+		// mic still off" after long TTS / tool gaps. (Floor still used while
+		// AlsaActive to avoid cutting mid-tail.)
+		stuckGrace = 4 * time.Second
+	}
+	stuckBusyDeadline := earliest.Add(stuckGrace)
 	deadline := time.Now().Add(maxWait)
 	loggedEarly := false
 	loggedStuck := false
 	for time.Now().Before(deadline) {
-		timeOk := !time.Now().Before(earliest)
-
-		// Plan B: cloud owns busy + tinyplay. Do not wait for anim to clear the
-		// busy file (it never will) — that caused false "busy stuck" and mid-tail kills.
+		// Plan B first: player already stopped → mic open ASAP.
 		if UseAlsaPlayback() {
-			if !AlsaActive() && timeOk {
+			if !AlsaActive() {
 				SetPlaying(false)
 				return true
 			}
-			if AlsaActive() && timeOk && !time.Now().Before(stuckBusyDeadline) {
+			// Still playing: refresh stuck deadline from bytes actually fed so
+			// tool-gap silence counted in alsaBytes can extend patience.
+			if !audioStartedAt.IsZero() {
+				if fed := alsaBytesWritten(); fed > 0 {
+					fedEarliest := audioStartedAt.Add(time.Duration(fed/32)*time.Millisecond + 200*time.Millisecond)
+					if fedEarliest.After(earliest) {
+						earliest = fedEarliest
+						stuckBusyDeadline = earliest.Add(stuckGrace)
+					}
+				}
+			}
+			// If we have been feeding only keepalives past soft deadline, kill.
+			if !time.Now().Before(stuckBusyDeadline) {
 				if !loggedStuck {
-					log.Println("[Xiaozhi][ALSA] drain stuck after PCM floor — killing for relisten")
+					log.Println("[Xiaozhi][ALSA] drain stuck after feed floor — killing for relisten")
 					loggedStuck = true
 				}
 				AlsaCancel()
 				SetPlaying(false)
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(80 * time.Millisecond)
 				return false
 			}
-			time.Sleep(40 * time.Millisecond)
+			time.Sleep(30 * time.Millisecond)
 			continue
 		}
+
+		// ExternalAudio / busy-file path (non-ALSA).
+		timeOk := !time.Now().Before(earliest)
 
 		busyGone := true
 		if _, err := os.Stat(BusyPath); err == nil {
@@ -486,9 +506,6 @@ func WaitPlaybackIdle(pcmBytes int, audioStartedAt time.Time, maxWait time.Durat
 			log.Printf("[Xiaozhi][TTS] busy cleared early — wait %v more (~%dms)", remain, pcmBytes/32)
 			loggedEarly = true
 		}
-		// Anim posted but never Completed → busy stuck; open mic after PCM duration + grace.
-		// Also cancel ExternalAudio: after camera/TTS underrun, busy file can linger while
-		// Wwise is starved — next turn then has silent/scratchy speakers.
 		if !busyGone && timeOk && !time.Now().Before(stuckBusyDeadline) {
 			if !loggedStuck {
 				log.Println("[Xiaozhi] busy stuck after PCM drain — forcing clear for relisten")
@@ -521,6 +538,22 @@ func IsBusy() bool {
 		return true
 	}
 	return false
+}
+
+// InterruptTurn cancels an in-flight listen/TTS turn so chess can inject a comment.
+// Prefer BargeIn when TTS is playing; otherwise cancel the listen turn context.
+func InterruptTurn(reason string) {
+	if BargeIn(reason) {
+		return
+	}
+	sess.mu.Lock()
+	cancel := sess.turnCancel
+	sess.mu.Unlock()
+	if cancel == nil {
+		return
+	}
+	log.Println("[Xiaozhi] interrupt turn:", reason)
+	cancel()
 }
 
 // ActiveSessionID returns the current WSS session_id, or empty if disconnected.

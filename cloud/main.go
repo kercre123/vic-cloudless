@@ -241,6 +241,8 @@ func xzcloudinit() xiaozhi.Config {
 	if !cfg.Enabled {
 		return cfg
 	}
+	initChessSpeak()
+	xiaozhi.StartChessAnnounceWatcher()
 	if cfg.DeviceID != "" && cfg.ClientID != "" {
 		go func() {
 			if err := xiaozhi.OtaCheck(&cfg); err != nil {

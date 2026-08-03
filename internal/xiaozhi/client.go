@@ -190,6 +190,28 @@ func (c *Client) ListenStart() error {
 	})
 }
 
+// ListenStartManual starts a manual listen round (explicit ListenStop required).
+func (c *Client) ListenStartManual() error {
+	return c.writeJSON(map[string]interface{}{
+		"type":       "listen",
+		"state":      "start",
+		"mode":       "manual",
+		"session_id": c.sessionID,
+	})
+}
+
+// ListenDetect sends a text-only utterance (wake/detect path).
+// source=text matches py-xiaozhi / web text-chat clients.
+func (c *Client) ListenDetect(text string) error {
+	return c.writeJSON(map[string]interface{}{
+		"type":       "listen",
+		"state":      "detect",
+		"text":       text,
+		"source":     "text",
+		"session_id": c.sessionID,
+	})
+}
+
 // ListenStop sends listen stop to the server (VAD end / stream done).
 func (c *Client) ListenStop() error {
 	return c.writeJSON(map[string]interface{}{

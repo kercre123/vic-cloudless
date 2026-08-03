@@ -39,15 +39,15 @@ const (
 	alsaPeriod   = "1024"
 	// Default tinyplay -n is 2 → buffer 2048 @ 16kHz (~128ms). Too small on
 	// Vector while Wwise holds MM1; underruns sound like crackle ("rè").
-	// 24 periods ≈ ~1.5s at 16kHz/1024 — absorbs normal sentence gaps without
-	// splicing silence; keepalive only for long tool/LLM stalls.
-	alsaPeriodCount = "24"
+	// 40 periods ≈ ~2.5s at 16kHz/1024 — covers tool/LLM stalls until
+	// keepalive kicks (~350ms idle) without underrunning mid-sentence.
+	alsaPeriodCount = "40"
 	alsaMixerMM2    = "PRI_MI2S_RX Audio Mixer MultiMedia2"
-	alsaQueueCap    = 256
+	alsaQueueCap    = 512
 	// Keepalive silence while TTS is armed but Opus pauses (MCP/tool wait).
-	// ~32ms chunks @ 16kHz mono s16le; only when the PCM queue is empty.
-	alsaKeepaliveEvery = 32 * time.Millisecond
-	alsaKeepaliveBytes = 1024 // 512 samples * 2 bytes
+	// Larger chunks (≈64ms) reduce write jitter vs 32ms drips.
+	alsaKeepaliveEvery = 48 * time.Millisecond
+	alsaKeepaliveBytes = 2048 // 1024 samples * 2 bytes ≈ 64ms @ 16k
 )
 
 var (
@@ -172,7 +172,7 @@ func alsaStart() error {
 
 	go alsaPump(w, pcmCh, done, cmd)
 
-	log.Println("[Xiaozhi][ALSA] tinyplay started (MM2 16k mono, buffer ~1.5s, gap keepalive on)")
+	log.Println("[Xiaozhi][ALSA] tinyplay started (MM2 16k mono, buffer ~2.5s, gap keepalive on)")
 	return nil
 }
 
@@ -203,19 +203,39 @@ func alsaPump(w *os.File, pcmCh <-chan []byte, done chan struct{}, cmd *exec.Cmd
 
 	var lastRealPCM time.Time
 	var gapLogged bool
-	// Opus frames arrive ~20–60ms apart; Xiaozhi sentence gaps are often
-	// 300–800ms. Padding those splices silence into speech → crackle ("rè").
-	// Only pad after a real tool/LLM stall (~1s+); ~1.5s ALSA buffer covers
-	// normal inter-sentence pauses.
+	// Opus frames arrive ~20–60ms; inter-sentence gaps often 200–800ms.
+	// Hardware buffer (~2.5s) covers short gaps without pad. Pad earlier
+	// than that (~350ms) so tool/LLM stalls never hit underrun (underrun =
+	// giật rè). Digital zero after real PCM is continuous if we never run dry.
 	const (
-		minGapBeforePad = 1000 * time.Millisecond
-		maxGapPad       = 45 * time.Second
+		minGapBeforePad = 350 * time.Millisecond
+		maxGapPad       = 60 * time.Second
 	)
+
+	writeFIFO := func(pcm []byte) error {
+		if len(pcm) == 0 {
+			return nil
+		}
+		n, err := w.Write(pcm)
+		if n > 0 {
+			alsaMu.Lock()
+			alsaBytes += int64(n)
+			alsaMu.Unlock()
+		}
+		return err
+	}
 
 	for {
 		select {
 		case pcm, ok := <-pcmCh:
 			if !ok {
+				// Brief ring fill only (~300ms) so tinyplay doesn't underrun on
+				// EOF. Longer pads (2.5s) made users wait in silence before mic
+				// reopened after TTS finished.
+				tail := make([]byte, 1024*2*5) // ~320ms @ 16kHz s16le mono
+				if _, err := w.Write(tail); err != nil {
+					_ = err
+				}
 				return
 			}
 			if len(pcm) == 0 {
@@ -223,7 +243,7 @@ func alsaPump(w *os.File, pcmCh <-chan []byte, done chan struct{}, cmd *exec.Cmd
 			}
 			lastRealPCM = time.Now()
 			gapLogged = false
-			if _, err := w.Write(pcm); err != nil {
+			if err := writeFIFO(pcm); err != nil {
 				log.Println("[Xiaozhi][ALSA] write:", err)
 				return
 			}
@@ -243,7 +263,14 @@ func alsaPump(w *os.File, pcmCh <-chan []byte, done chan struct{}, cmd *exec.Cmd
 					idle.Round(time.Millisecond))
 				gapLogged = true
 			}
-			if _, err := w.Write(silence); err != nil {
+			// Burst a bit of silence to refill the ring before drips keep pace.
+			// First tick after threshold: ~256ms; then regular keepalive chunks.
+			burst := silence
+			if idle < minGapBeforePad+alsaKeepaliveEvery*2 {
+				big := make([]byte, alsaKeepaliveBytes*4) // ~256ms
+				burst = big
+			}
+			if err := writeFIFO(burst); err != nil {
 				log.Println("[Xiaozhi][ALSA] keepalive write:", err)
 				return
 			}
@@ -269,12 +296,14 @@ func alsaWrite(pcm []byte) (written int64, err error) {
 			err = fmt.Errorf("alsa closed")
 		}
 	}()
-	ch <- cp
-	alsaMu.Lock()
-	alsaBytes += int64(len(cp))
-	total := alsaBytes
-	alsaMu.Unlock()
-	return total, nil
+	// Count bytes when actually written in the pump (avoids “fed ahead of ears”
+	// drift for WaitPlaybackIdle). Here only enqueue.
+	select {
+	case ch <- cp:
+	case <-time.After(8 * time.Second):
+		return -1, fmt.Errorf("alsa queue blocked")
+	}
+	return alsaBytesWritten() + int64(len(cp)), nil
 }
 
 func alsaBytesWritten() int64 {
@@ -284,6 +313,8 @@ func alsaBytesWritten() int64 {
 }
 
 // alsaEnd closes the PCM queue so the pump drains to tinyplay then exits.
+// Waits for the pump (tinyplay drain) so callers do not open the mic or kill
+// mid-tail — early return used to leave hardware still playing → giật rè kill.
 func alsaEnd() error {
 	alsaKeepalive.Store(false)
 	alsaMu.Lock()
@@ -304,6 +335,14 @@ func alsaEnd() error {
 	if done == nil {
 		alsaReady.Store(false)
 		return nil
+	}
+	// Drain remaining queue + short tail pad (~300ms) + tinyplay exit.
+	// Cap wait: do not hold turn complete / mic closed for many seconds.
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		log.Println("[Xiaozhi][ALSA] drain wait timed out — killing tinyplay")
+		AlsaCancel()
 	}
 	return nil
 }

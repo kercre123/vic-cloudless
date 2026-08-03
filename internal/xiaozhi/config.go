@@ -25,6 +25,7 @@ type Config struct {
 	IdleTimeoutSec        int    `json:"idle_timeout_sec"`
 	SessionIdleSec        int    `json:"session_idle_sec"`
 	TTSMode               string `json:"tts_mode"`
+	GameGoogleTTSVI       bool   `json:"game_google_tts_vi"`
 }
 
 func defaultConfig() Config {

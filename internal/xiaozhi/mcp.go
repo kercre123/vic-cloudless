@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/digital-dream-labs/vector-cloud/internal/log"
 )
@@ -158,7 +161,7 @@ func (h *MCPHandler) handleInitialize(msg ServerMessage) error {
 func (h *MCPHandler) HandleToolsList(msg ServerMessage) error {
 	tools := []map[string]interface{}{
 		toolDef("self.get_device_status",
-			"Get Anki Vector device status (platform, firmware). Call when user asks about the robot status.",
+			"Get Anki Vector device status (platform, firmware) plus short live summaries when web board games are active (cờ vua chess_summary and/or cờ tướng xiangqi_summary). Call for robot status, or as a quick check before answering about games.",
 			nil, nil),
 		toolDef("self.audio_speaker.set_volume",
 			"Set Vector master speaker volume. Pass 0-100 percent. "+
@@ -216,6 +219,48 @@ func (h *MCPHandler) HandleToolsList(msg ServerMessage) error {
 				},
 			},
 			[]string{"color"}),
+		toolDef("self.chess.get_state",
+			"REQUIRED for international chess / cờ vua ONLY (NOT cờ tướng/xiangqi). Read the live cờ vua game on Vector web UI (tab Cờ vua / :80). ALWAYS call before answering about: cờ vua, international chess, FEN, white/black pieces (Trắng/Đen cờ vua), queen/rook/knight, e2e4 UCI. Do NOT use for cờ tướng. Do NOT guess — fetch this. Returns JSON: fen, turn, status, lastMove, history, board.",
+			nil, nil),
+		toolDef("self.chess.summarize",
+			"REQUIRED for cờ vua / international chess ONLY (NOT cờ tướng). ALWAYS call for: tình hình cờ vua, ván cờ vua, tóm tắt cờ vua, chess board summary, white/black turn on chess. Returns plain text. Prefer this over guessing. For cờ tướng use self.xiangqi.summarize instead.",
+			nil, nil),
+		toolDef("self.xiangqi.get_state",
+			"REQUIRED for any cờ tướng / xiangqi / Chinese chess question. Read the live Xiangqi game on Vector web UI (tab Cờ tướng / :80). ALWAYS call for: cờ tướng, xiangqi, Chinese chess, bàn cờ tướng, tình hình cờ tướng, nước cờ tướng, lượt đỏ/đen (Đỏ người chơi / bot Đen), chiếu tướng, xe/mã/pháo/tướng/sĩ/tượng/tốt, a0–i9 board. Do NOT use self.chess.* for these. Do NOT guess — fetch this. Returns JSON: board, turn (red/black), status, lastMove, history.",
+			nil, nil),
+		toolDef("self.xiangqi.summarize",
+			"REQUIRED when chatting about cờ tướng / xiangqi (Vietnamese or English). ALWAYS call for: tình hình bàn cờ tướng, cờ tướng đang thế nào, tóm tắt ván cờ tướng, nước vừa rồi cờ tướng, ai thắng cờ tướng, how is the xiangqi board. Returns plain text to speak. Prefer this over guessing. Do NOT call self.chess.summarize for cờ tướng.",
+			nil, nil),
+		toolDef("self.caro.get_state",
+			"REQUIRED for cờ caro / gomoku. Live board on Vector web (tab Caro). Keywords: caro, gomoku, năm liên, X/O, cấm 2 đầu, freestyle. NOT chess/xiangqi. Returns JSON board/turn/status/history.",
+			nil, nil),
+		toolDef("self.caro.summarize",
+			"REQUIRED when asking about cờ caro / gomoku situation. ALWAYS call for: tình hình caro, bàn caro, nước caro. Plain text. Do NOT use self.chess/xiangqi.",
+			nil, nil),
+		toolDef("self.connect4.get_state",
+			"REQUIRED for Connect Four / cờ thả cột. Keywords: connect four, connect4, thả cột, 4 in a row. Returns JSON.",
+			nil, nil),
+		toolDef("self.connect4.summarize",
+			"REQUIRED to summarize Connect Four / cờ thả cột. ALWAYS call before answering about that game.",
+			nil, nil),
+		toolDef("self.reversi.get_state",
+			"REQUIRED for Reversi / Othello. Keywords: reversi, othello, lật quân. Returns JSON + scores.",
+			nil, nil),
+		toolDef("self.reversi.summarize",
+			"REQUIRED to summarize Reversi/Othello. ALWAYS call before answering about that game.",
+			nil, nil),
+		toolDef("self.checkers.get_state",
+			"REQUIRED for checkers / cờ đam / draughts. Keywords: checkers, draughts, cờ đam, jump, vua đam. Returns JSON.",
+			nil, nil),
+		toolDef("self.checkers.summarize",
+			"REQUIRED to summarize checkers / cờ đam. ALWAYS call before answering about that game.",
+			nil, nil),
+		toolDef("self.go9.get_state",
+			"REQUIRED for Go 9×9 / cờ vây. Keywords: cờ vây, go, weiqi, go9, khí, pass. Returns JSON.",
+			nil, nil),
+		toolDef("self.go9.summarize",
+			"REQUIRED to summarize Go 9×9 / cờ vây. ALWAYS call before answering about that game.",
+			nil, nil),
 	}
 	if err := h.sendResult(msg.ID, map[string]interface{}{"tools": tools}); err != nil {
 		return err
@@ -264,7 +309,24 @@ func (h *MCPHandler) HandleToolCall(msg ServerMessage) (string, error) {
 
 	switch toolName {
 	case "self.get_device_status":
-		text = `{"platform":"vector","status":"ok","firmware":"wire-os"}`
+		// Keep status JSON parseable; embed any active board-game summaries.
+		fields := []string{`"platform":"vector"`, `"status":"ok"`, `"firmware":"wire-os"`}
+		for _, pair := range [][2]string{
+			{"chess_summary", "/api/mods/Chess/summary"},
+			{"xiangqi_summary", "/api/mods/Xiangqi/summary"},
+			{"caro_summary", "/api/mods/Caro/summary"},
+			{"connect4_summary", "/api/mods/Connect4/summary"},
+			{"reversi_summary", "/api/mods/Reversi/summary"},
+			{"checkers_summary", "/api/mods/Checkers/summary"},
+			{"go9_summary", "/api/mods/Go9/summary"},
+		} {
+			if sum, err := fetchWiredChess(pair[1]); err == nil {
+				if t := unwrapSummaryText(sum); t != "" {
+					fields = append(fields, fmt.Sprintf(`%q:%q`, pair[0], t))
+				}
+			}
+		}
+		text = "{" + strings.Join(fields, ",") + "}"
 
 	case "self.audio_speaker.set_volume":
 		vol := 50
@@ -333,6 +395,50 @@ func (h *MCPHandler) HandleToolCall(msg ServerMessage) (string, error) {
 		} else {
 			isError = true
 			text = fmt.Sprintf(`{"error":"unknown eye color: %s"}`, color)
+		}
+
+	case "self.chess.get_state", "self.xiangqi.get_state",
+		"self.caro.get_state", "self.connect4.get_state",
+		"self.reversi.get_state", "self.checkers.get_state", "self.go9.get_state":
+		path := map[string]string{
+			"self.chess.get_state":     "/api/mods/Chess/state",
+			"self.xiangqi.get_state":   "/api/mods/Xiangqi/state",
+			"self.caro.get_state":      "/api/mods/Caro/state",
+			"self.connect4.get_state":  "/api/mods/Connect4/state",
+			"self.reversi.get_state":   "/api/mods/Reversi/state",
+			"self.checkers.get_state":  "/api/mods/Checkers/state",
+			"self.go9.get_state":       "/api/mods/Go9/state",
+		}[toolName]
+		body, err := fetchWiredChess(path)
+		if err != nil {
+			isError = true
+			text = fmt.Sprintf(`{"error":%q}`, err.Error())
+			log.Println("[Xiaozhi] MCP", toolName, "error:", err)
+		} else {
+			text = body
+			log.Println("[Xiaozhi] MCP", toolName, "OK")
+		}
+
+	case "self.chess.summarize", "self.xiangqi.summarize",
+		"self.caro.summarize", "self.connect4.summarize",
+		"self.reversi.summarize", "self.checkers.summarize", "self.go9.summarize":
+		path := map[string]string{
+			"self.chess.summarize":     "/api/mods/Chess/summary",
+			"self.xiangqi.summarize":   "/api/mods/Xiangqi/summary",
+			"self.caro.summarize":      "/api/mods/Caro/summary",
+			"self.connect4.summarize":  "/api/mods/Connect4/summary",
+			"self.reversi.summarize":   "/api/mods/Reversi/summary",
+			"self.checkers.summarize":  "/api/mods/Checkers/summary",
+			"self.go9.summarize":       "/api/mods/Go9/summary",
+		}[toolName]
+		body, err := fetchWiredChess(path)
+		if err != nil {
+			isError = true
+			text = fmt.Sprintf(`{"error":%q}`, err.Error())
+			log.Println("[Xiaozhi] MCP", toolName, "error:", err)
+		} else {
+			text = unwrapSummaryText(body)
+			log.Println("[Xiaozhi] MCP", toolName, "OK")
 		}
 
 	case "self.vector.action":
@@ -581,4 +687,49 @@ func EncodeIntentParamsJSON(params map[string]string) string {
 		return "{}\n"
 	}
 	return string(b) + "\n"
+}
+
+// unwrapSummaryText prefers {"text":"..."} wrappers from wired game summary APIs.
+func unwrapSummaryText(body string) string {
+	var wrap struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal([]byte(body), &wrap) == nil && wrap.Text != "" {
+		return wrap.Text
+	}
+	return body
+}
+
+// fetchWiredChess reads game state from local wired (:8080 preferred, :80 fallback).
+// Used for Chess, Xiangqi, and any other /api/mods/* board endpoints.
+func fetchWiredChess(path string) (string, error) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	var lastErr error
+	for _, base := range []string{"http://127.0.0.1:8080", "http://127.0.0.1:80"} {
+		req, err := http.NewRequest(http.MethodGet, base+path, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode >= 300 {
+			lastErr = fmt.Errorf("wired HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			continue
+		}
+		return string(body), nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("wired unreachable")
+	}
+	return "", lastErr
 }

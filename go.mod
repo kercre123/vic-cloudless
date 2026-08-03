@@ -6,6 +6,7 @@ toolchain go1.24.3
 
 require (
 	github.com/aws/aws-sdk-go v1.55.7
+	github.com/beevik/ntp v1.4.3
 	github.com/cenkalti/backoff v2.2.1+incompatible
 	github.com/dgrijalva/jwt-go v3.2.1-0.20180719211823-0b96aaa70776+incompatible
 	github.com/digital-dream-labs/api v0.0.0-20210824232136-8cc90c1bb12c
@@ -21,9 +22,11 @@ require (
 	github.com/os-vector/vosk-api/go v0.0.0-20250511151511-68b495ad3f8c
 	github.com/stretchr/testify v1.10.0
 	golang.org/x/net v0.40.0
+	golang.org/x/sys v0.33.0
 	golang.org/x/time v0.11.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20250512202823-5a2f75b736a9
 	google.golang.org/grpc v1.72.0
+	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302
 )
 
 require (
@@ -32,7 +35,6 @@ require (
 	github.com/aalpern/go-metrics v0.0.0-20181116155206-644932c99203 // indirect
 	github.com/alecthomas/template v0.0.0-20190718012654-fb15b899a751 // indirect
 	github.com/alecthomas/units v0.0.0-20211218093645-b94a6e3cc137 // indirect
-	github.com/beevik/ntp v1.4.3 // indirect
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/digital-dream-labs/opus-go v0.0.0-20201230195736-934a8a9e0a1e // indirect
@@ -59,15 +61,14 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/rogpeppe/go-internal v1.13.1 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
+	github.com/tosone/minimp3 v1.0.2 // indirect
 	go.opentelemetry.io/otel v1.35.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.35.0 // indirect
-	golang.org/x/sys v0.33.0 // indirect
 	golang.org/x/text v0.25.0 // indirect
 	google.golang.org/genproto v0.0.0-20250512202823-5a2f75b736a9 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250512202823-5a2f75b736a9 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
 	gopkg.in/alecthomas/kingpin.v2 v2.2.6 // indirect
-	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
