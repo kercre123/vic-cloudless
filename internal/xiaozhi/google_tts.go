@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/tosone/minimp3"
 
@@ -27,15 +26,15 @@ func RunGoogleViAnnounce(text string) error {
 	if text == "" {
 		return nil
 	}
-	// Google TTS URL length / rate limits — keep short.
-	if utf8.RuneCountInString(text) > 160 {
-		r := []rune(text)
-		text = string(r[:160])
-	}
 	log.Printf("[Xiaozhi][Chess] announce Google VI: %q", text)
 	DisarmRelistenPending()
 
-	pcm, err := fetchGoogleTranslatePCM16k(text, "vi")
+	// Mark busy for the whole announce so the next chess-announce does not
+	// start early and clip the current one.
+	SetPlaying(true)
+	defer SetPlaying(false)
+
+	pcm, err := fetchGoogleTranslatePCM16kMulti(text, "vi")
 	if err != nil {
 		log.Println("[Xiaozhi][Chess] Google VI TTS failed, SayText fallback:", err)
 		return RunChessAnnounce(text)
@@ -49,6 +48,75 @@ func RunGoogleViAnnounce(text string) error {
 	}
 	log.Println("[Xiaozhi][Chess] announce done (Google VI)")
 	return nil
+}
+
+// googleTTSMaxRunes is per-request limit for translate.google.com/translate_tts.
+// Over-long single URLs fail or get truncated; we split instead of hard-cutting the say text.
+const googleTTSMaxRunes = 140
+
+func fetchGoogleTranslatePCM16kMulti(text, lang string) ([]byte, error) {
+	chunks := splitTTSText(text, googleTTSMaxRunes)
+	if len(chunks) == 0 {
+		return nil, fmt.Errorf("empty tts text")
+	}
+	var out []byte
+	for i, c := range chunks {
+		pcm, err := fetchGoogleTranslatePCM16k(c, lang)
+		if err != nil {
+			return nil, fmt.Errorf("chunk %d/%d: %w", i+1, len(chunks), err)
+		}
+		out = append(out, pcm...)
+		// Tiny gap between sentence chunks (~80ms silence).
+		if i+1 < len(chunks) {
+			out = append(out, make([]byte, 16000*2*80/1000)...)
+		}
+	}
+	return out, nil
+}
+
+// splitTTSText breaks text into pieces ≤ maxRunes, preferring sentence boundaries.
+func splitTTSText(text string, maxRunes int) []string {
+	text = strings.TrimSpace(text)
+	if text == "" || maxRunes < 8 {
+		return nil
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return []string{text}
+	}
+	var parts []string
+	for len(runes) > 0 {
+		if len(runes) <= maxRunes {
+			parts = append(parts, string(runes))
+			break
+		}
+		window := runes[:maxRunes]
+		// Prefer split after sentence enders, then spaces.
+		cut := -1
+		for i := len(window) - 1; i >= maxRunes/3; i-- {
+			switch window[i] {
+			case '.', '!', '?', '。', '…', ';', ':':
+				cut = i + 1
+			}
+			if cut >= 0 {
+				break
+			}
+		}
+		if cut < 0 {
+			for i := len(window) - 1; i >= maxRunes/3; i-- {
+				if window[i] == ' ' || window[i] == ',' || window[i] == '，' {
+					cut = i + 1
+					break
+				}
+			}
+		}
+		if cut < 0 {
+			cut = maxRunes
+		}
+		parts = append(parts, strings.TrimSpace(string(runes[:cut])))
+		runes = []rune(strings.TrimSpace(string(runes[cut:])))
+	}
+	return parts
 }
 
 func fetchGoogleTranslatePCM16k(text, lang string) ([]byte, error) {
@@ -168,6 +236,5 @@ func playPCM16kALSA(pcm []byte) error {
 	if err := StreamEnd(); err != nil {
 		return err
 	}
-	SetPlaying(false)
 	return nil
 }

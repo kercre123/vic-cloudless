@@ -57,6 +57,7 @@ var (
 	alsaPCMCh     chan []byte
 	alsaDone      chan struct{}
 	alsaBytes     int64
+	alsaPendingBytes int64 // PCM enqueued but not yet written to FIFO
 	alsaReady     atomic.Bool
 	mixerReady    atomic.Bool
 	alsaKeepalive atomic.Bool
@@ -114,6 +115,7 @@ func alsaKillLocked() {
 	alsaWriter = nil
 	alsaDone = nil
 	alsaBytes = 0
+	alsaPendingBytes = 0
 	alsaReady.Store(false)
 	_ = os.Remove(alsaFIFOPath)
 }
@@ -167,6 +169,7 @@ func alsaStart() error {
 	alsaPCMCh = pcmCh
 	alsaDone = done
 	alsaBytes = 0
+	alsaPendingBytes = 0
 	alsaReady.Store(true)
 	alsaKeepalive.Store(true)
 
@@ -220,6 +223,11 @@ func alsaPump(w *os.File, pcmCh <-chan []byte, done chan struct{}, cmd *exec.Cmd
 		if n > 0 {
 			alsaMu.Lock()
 			alsaBytes += int64(n)
+			if alsaPendingBytes >= int64(n) {
+				alsaPendingBytes -= int64(n)
+			} else {
+				alsaPendingBytes = 0
+			}
 			alsaMu.Unlock()
 		}
 		return err
@@ -300,6 +308,9 @@ func alsaWrite(pcm []byte) (written int64, err error) {
 	// drift for WaitPlaybackIdle). Here only enqueue.
 	select {
 	case ch <- cp:
+		alsaMu.Lock()
+		alsaPendingBytes += int64(len(cp))
+		alsaMu.Unlock()
 	case <-time.After(8 * time.Second):
 		return -1, fmt.Errorf("alsa queue blocked")
 	}
@@ -336,12 +347,27 @@ func alsaEnd() error {
 		alsaReady.Store(false)
 		return nil
 	}
-	// Drain remaining queue + short tail pad (~300ms) + tinyplay exit.
-	// Cap wait: do not hold turn complete / mic closed for many seconds.
+	// Drain remaining queue + HW ring (~2.5s) + tinyplay exit.
+	// A fixed 3s cap was killing Google VI / longer comments mid-sentence
+	// (log: "drain wait timed out — killing tinyplay" after ~3s).
+	// Scale wait with how much PCM still pending in the pump queue.
+	alsaMu.Lock()
+	pending := alsaPendingBytes
+	alsaMu.Unlock()
+
+	// 16 kHz mono s16le → 32000 bytes/sec. Add HW buffer (~2.5s) + slop.
+	est := time.Duration(pending)*time.Second/32000 + 5*time.Second
+	if est < 10*time.Second {
+		est = 10 * time.Second
+	}
+	if est > 60*time.Second {
+		est = 60 * time.Second
+	}
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
-		log.Println("[Xiaozhi][ALSA] drain wait timed out — killing tinyplay")
+	case <-time.After(est):
+		log.Printf("[Xiaozhi][ALSA] drain wait timed out after %v (pending≈%dB) — killing tinyplay",
+			est.Round(time.Millisecond), pending)
 		AlsaCancel()
 	}
 	return nil
