@@ -150,7 +150,7 @@ func (ctm *ClientTokenManager) DecodeTokenJdoc(jdoc []byte) error {
 	} else {
 		log.Println("Updated valid tokens")
 	}
-	return nil
+	return err
 }
 
 // UpdateTokens polls the server for new tokens, and will update as necessary
