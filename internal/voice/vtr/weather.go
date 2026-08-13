@@ -155,7 +155,7 @@ func getWeather(location string) (tempC, tempF string, weather WeatherCondition,
 		"q":      {location},
 	}.Encode()
 	req1, _ := http.NewRequest("GET", geoURL, nil)
-	req1.Header.Set("User-Agent", "vic-cloudswitch/1.0")
+	req1.Header.Set("User-Agent", "vic-cloudless/1.0")
 	res1, err := http.DefaultClient.Do(req1)
 	if err != nil {
 		return "", "", Cold, time.Time{}, err
