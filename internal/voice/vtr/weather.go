@@ -21,7 +21,6 @@ func GetJdoc() (SettingsJdoc, bool) {
 	file, err := os.ReadFile("/data/data/com.anki.victor/persistent/jdocs/vic.RobotSettings.json")
 	if err != nil {
 		log.Println(err)
-		os.Exit(1)
 	}
 	var j SettingsJdoc
 	err = json.Unmarshal(file, &j)
@@ -123,6 +122,7 @@ func FetchWeatherNow(external bool) {
 	if err != nil {
 		currentTemp = "120"
 		currentCondition = "Snow"
+		fmt.Println("Error getting weather")
 		weatherMutex.Unlock()
 		return
 	}
@@ -155,6 +155,7 @@ func getWeather(location string) (tempC, tempF string, weather WeatherCondition,
 		"q":      {location},
 	}.Encode()
 	req1, _ := http.NewRequest("GET", geoURL, nil)
+	req1.Header.Set("User-Agent", "vic-cloudswitch/1.0")
 	res1, err := http.DefaultClient.Do(req1)
 	if err != nil {
 		return "", "", Cold, time.Time{}, err
@@ -252,9 +253,9 @@ func getWeather(location string) (tempC, tempF string, weather WeatherCondition,
 		} else {
 			weather = Clear
 		}
-	case code == 3 || code == 45 || code == 48 || (code >= 61 && code <= 82):
+	case code == 3 || code == 45 || code == 48:
 		weather = Cloudy
-	case code > 50 && code < 68:
+	case (code >= 51 && code <= 67) || (code >= 80 && code <= 82):
 		weather = Rain
 	default:
 		weather = Cloudy
