@@ -111,6 +111,11 @@ func (ctm *ClientTokenManager) writeTokensFile(data []byte) error {
 func (ctm *ClientTokenManager) CheckToken(clientToken string) (string, error) {
 	ctm.checkValid <- struct{}{}
 	<-ctm.notifyValid
+
+	if token.PerRuntimeToken != "" && token.PerRuntimeToken == clientToken {
+		return "Per-Runtime Token", nil
+	}
+
 	if len(ctm.ClientTokens) == 0 {
 		return "", grpc.Errorf(codes.Unauthenticated, "no valid tokens")
 	}
