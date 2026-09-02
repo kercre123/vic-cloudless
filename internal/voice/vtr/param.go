@@ -125,7 +125,7 @@ func ParamChecker(intent string, speechText string, botSerial string) (string, m
 	} else if strings.Contains(intent, "intent_weather_extend") {
 		isParam = true
 		newIntent = intent
-		//condition, is_forecast, local_datetime, speakable_location_string, temperature, temperature_unit := getWeather(botLocation)
+		go FetchWeatherNow(true)
 		intentParams = map[string]string{"condition": string(currentCondition), "is_forecast": "false", "local_datetime": currentWeatherTime.String(), "speakable_location_string": currentLocation, "temperature": currentTemp, "temperature_unit": currentUnits}
 	} else if strings.Contains(intent, "intent_imperative_volumelevel_extend") {
 		isParam = true

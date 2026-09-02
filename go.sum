@@ -247,6 +247,7 @@ github.com/googleapis/gax-go/v2 v2.0.4/go.mod h1:0Wqv26UfaUD9n4G6kQubkQ+KchISgw+
 github.com/googleapis/gax-go/v2 v2.0.5/go.mod h1:DWXyrwAJ9X0FpwwEdw+IPEYBICEFu5mhpdKc/us6bOk=
 github.com/gopherjs/gopherjs v0.0.0-20181017120253-0766667cb4d1/go.mod h1:wJfORRmW1u3UXTncJ5qlYoELFm8eSnnEO6hX4iZ3EWY=
 github.com/gorilla/mux v1.8.0/go.mod h1:DVbg23sWSpFRCP0SfiEN6jmj59UnW/n46BH5rLB71So=
+github.com/gorilla/websocket v1.4.2 h1:+/TMaTYc4QFitKJxsQ7Yye35DkWvkdLcvGKqM+x0Ufc=
 github.com/gorilla/websocket v1.4.2/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
 github.com/gotestyourself/gotestyourself v2.2.0+incompatible/go.mod h1:zZKM6oeNM8k+FRljX1mnzVYeS8wiGgQyvST1/GafPbY=
 github.com/grd/ogg v0.0.0-20130623210630-0dae53159b70 h1:BbrcLhyNM9P1UAZnPBomiAvDv7WEIJy+sfrJItfSUL8=
@@ -299,6 +300,14 @@ github.com/jstemmer/go-junit-report v0.0.0-20190106144839-af01ea7f8024/go.mod h1
 github.com/jstemmer/go-junit-report v0.9.1/go.mod h1:Brl9GWCQeLvo8nXZwPNNblvFj/XSXhF0NWZEnDohbsk=
 github.com/jtolds/gls v4.20.0+incompatible/go.mod h1:QJZ7F/aHp+rZTRtaJ1ow/lLfFfVYBRgL+9YlvaHOwJU=
 github.com/julienschmidt/httprouter v1.2.0/go.mod h1:SYymIcj16QtmaHHD7aYtjjsJG7VTCxuUUipMqKk8s4w=
+github.com/k2-fsa/sherpa-onnx-go v1.12.22 h1:MiqMQO4ss5FzsV+NYI95kSrkJ/DthRQFCx4Ta8Bg6Xk=
+github.com/k2-fsa/sherpa-onnx-go v1.12.22/go.mod h1:B/ynRbVa5gpYoZYeYgY3zPi4MTfKk95UZueZDSIhbjk=
+github.com/k2-fsa/sherpa-onnx-go-linux v1.12.22 h1:On25i5dFoeQ9QPJXV/eFXRojpP6z1Rp7alYDRPgYDA8=
+github.com/k2-fsa/sherpa-onnx-go-linux v1.12.22/go.mod h1:NXEH2rsBgTdqY59YpPq6CtSBlBAXy/8a9FmpLERU97I=
+github.com/k2-fsa/sherpa-onnx-go-macos v1.12.22 h1:iI96ZUaOGpgj8d6DTkWt3NmeLh1YtK5WzXKG5mwffJw=
+github.com/k2-fsa/sherpa-onnx-go-macos v1.12.22/go.mod h1:ZOhUAXC62Unj0ZNfu6zxSFKcW96aXf7P3BsqiUyOBbE=
+github.com/k2-fsa/sherpa-onnx-go-windows v1.12.22 h1:0MNAZqWJq0ZA4b47rev1o1IFs9+qKYVF4N9dxA8lCQk=
+github.com/k2-fsa/sherpa-onnx-go-windows v1.12.22/go.mod h1:5AX7TU8+P/gInjglY1ijtWUM2b8iyR0QX4yEngzMe64=
 github.com/karrick/godirwalk v1.8.0/go.mod h1:H5KPZjojv4lE+QYImBI8xVtrBRgYrIVsaRPx4tDPEn4=
 github.com/karrick/godirwalk v1.10.3/go.mod h1:RoGL9dQei4vP9ilrpETWE8CLOZ1kiN0LhBygSwrAsHA=
 github.com/kisielk/errcheck v1.1.0/go.mod h1:EZBBE59ingxPouuu3KfxchcWSUPOHkagtvWXihfKN4Q=
@@ -382,8 +391,6 @@ github.com/opentracing/opentracing-go v1.1.0/go.mod h1:UkNAQd3GIcIGf0SeVgPpRdFSt
 github.com/opentracing/opentracing-go v1.2.0 h1:uEJPy/1a5RIPAJ0Ov+OIO8OxWu77jEv+1B0VhjKrZUs=
 github.com/opentracing/opentracing-go v1.2.0/go.mod h1:GxEUsuufX4nBwe+T+Wl9TAgYrxe9dPLANfrWvHYVTgc=
 github.com/ory/dockertest v3.3.5+incompatible/go.mod h1:1vX4m9wsvi00u5bseYwXaSnhNrne+V0E6LAcBILJdPs=
-github.com/os-vector/vosk-api/go v0.0.0-20250511151511-68b495ad3f8c h1:l2AqzVYsIpQFeBVukSO3ATtjEMvUZZEvHQqM38CyNnA=
-github.com/os-vector/vosk-api/go v0.0.0-20250511151511-68b495ad3f8c/go.mod h1:gMPFzwxvbiiOyUa4MejBebyCYF9Ikg/mA4IfIAKgmB8=
 github.com/pascaldekloe/goe v0.0.0-20180627143212-57f6aae5913c/go.mod h1:lzWF7FIEvWOWxwDKqyGYQf6ZUaNfKdP144TG7ZOy1lc=
 github.com/pelletier/go-toml v1.2.0/go.mod h1:5z9KED0ma1S8pY6P1sdut58dfprrGBbd/94hg7ilaic=
 github.com/pelletier/go-toml v1.7.0/go.mod h1:vwGMzjaWMwyfHwgIBhI2YUM4fB6nL6lVAvS1LBMMhTE=

@@ -1,14 +1,19 @@
 package stream
 
 import (
+	"fmt"
 	"strconv"
 
 	chippergrpc2 "github.com/digital-dream-labs/api/go/chipperpb"
 	"github.com/digital-dream-labs/vector-cloud/internal/voice/vtr"
 )
 
-// it works well at 533MHz, but transcription is instant at 730
+// transcription is instant at >1GHz
 var doFreqStuff bool = true
+
+// set to 1267200 and 800000 for maximum Juice
+var cpuUpClock int = 1094400
+var memUpClock int = 700000
 
 // WIRE: main entrypoint for a request!
 // we are keeping the OG code commented in case we want to make some sort of hybrid solution
@@ -44,6 +49,7 @@ func (strm *Streamer) init(streamSize int) {
 	// 		}
 	// 	}
 	// }()
+	i := 0
 
 	go func() {
 		var curFreq string
@@ -52,15 +58,21 @@ func (strm *Streamer) init(streamSize int) {
 			curFreq = vtr.GetFreq()
 			o, err := strconv.Atoi(curFreq)
 			if err == nil {
-				if o < 729600 {
+				if o < cpuUpClock {
 					underClockAfter = true
-					go vtr.SetFreq("729600", "600000")
+					go vtr.SetFreq(strconv.Itoa(cpuUpClock), strconv.Itoa(memUpClock))
 				}
 			}
 		}
 		for data := range strm.audioStream {
+			i++
+			thisi := i
 			text := vtr.Process(data)
+			if thisi != i {
+				continue
+			}
 			if text != "" {
+				fmt.Println("TEXT HAS BEEN PROCESSED, TEXT RECIEVED:", text)
 				intent, iParam, _ := vtr.ProcessTextAll(text, vtr.IntentList)
 				sendIntentGraphResponse(&chippergrpc2.IntentGraphResponse{
 					ResponseType: chippergrpc2.IntentGraphMode_INTENT,
@@ -79,4 +91,5 @@ func (strm *Streamer) init(streamSize int) {
 			}
 		}
 	}()
+
 }
