@@ -43,9 +43,14 @@ func sendUtterance(sr int, utterance []int16) string {
 	str.AcceptWaveform(sr, audio)
 	rec.Decode(str)
 	result := str.GetResult()
+	overarchingIgnore = false
+
+	if result == nil {
+		finalResp = "empty"
+		return finalResp
+	}
 
 	finalResp = strings.ToLower(result.Text)
-	overarchingIgnore = false
 	return finalResp
 }
 
